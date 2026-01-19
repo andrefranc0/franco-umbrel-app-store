@@ -1,8 +1,4 @@
 services:
-  app_proxy:
-    environment:
-      APP_HOST: franco-hytale_server_1
-      APP_PORT: 3000
   hytale:
     image: indifferentbroccoli/hytale-server-docker
     restart: unless-stopped

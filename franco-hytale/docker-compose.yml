@@ -1,0 +1,18 @@
+services:
+  app_proxy:
+    environment:
+      APP_HOST: franco-hytale_server_1
+      APP_PORT: 3000
+  hytale:
+    image: indifferentbroccoli/hytale-server-docker
+    restart: unless-stopped
+    container_name: hytale
+    stop_grace_period: 30s
+    ports:
+      - 5520:5520/udp
+    env_file:
+      - .env
+    volumes:
+      - ${APP_DATA_DIR}/server-files:/home/hytale/server-files
+    stdin_open: true
+    tty: true

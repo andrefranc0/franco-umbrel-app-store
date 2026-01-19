@@ -5,7 +5,7 @@ services:
       APP_PORT: 3000
 
   web:
-    image: devlikeapro/waha:latest-2025.10.3@sha256:1c627eb01be7a3e50493fb8d49b1dfb2524be4462fa79a2dd50577f37e28db31
+    image: devlikeapro/waha:noweb-arm-2026.1.3@sha256:4f8c5172432c81d2c1908e1d00264b2518e286154cba99eb9d958609dc7caea4
     restart: on-failure
     user: "0:0"
     environment:

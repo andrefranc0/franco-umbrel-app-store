@@ -1,7 +1,7 @@
 services:
   app_proxy:
     environment:
-      APP_HOST: denny-waha_web_1
+      APP_HOST: franco-waha_web_1
       APP_PORT: 3000
 
   web:

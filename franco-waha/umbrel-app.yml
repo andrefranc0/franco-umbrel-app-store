@@ -1,5 +1,5 @@
 manifestVersion: 1
-id: denny-waha
+id: franco-waha
 name: WAHA
 tagline: A one-click WhatsApp API
 icon: https://raw.githubusercontent.com/dennysubke/dennys-umbrel-app-gallery/main/denny-waha/logo.png
@@ -22,7 +22,7 @@ description: >-
   ⚙️ Right-click the app and select “Troubleshoot” to see the login data. Use “umbrel” as the API key.
 developer: devlikeapro
 website: https://waha.devlike.pro/
-submitter: dennysubke
+submitter: andrefranco0
 submission: https://github.com/getumbrel/umbrel-apps/pull/
 repo: https://github.com/devlikeapro/waha
 support: https://github.com/devlikeapro/waha/issues

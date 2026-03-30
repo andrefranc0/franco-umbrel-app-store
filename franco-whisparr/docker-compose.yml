@@ -1,0 +1,19 @@
+services:
+services:
+  app_proxy:
+    environment:
+      APP_HOST: franco-whisparr_app_1
+      APP_PORT: 6969
+  app:
+    image: ghcr.io/hotio/whisparr
+    restart: on-failure
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - UMASK=002
+      - TZ=Etc/UTC
+      - WEBUI_PORTS=6969/tcp 
+    volumes:
+      - ${APP_DATA_DIR}:/config
+      - ${APP_DATA_DIR}:/data
+      - ${UMBREL_ROOT}/home/Downloads:/download

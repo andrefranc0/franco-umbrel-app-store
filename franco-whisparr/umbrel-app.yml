@@ -1,5 +1,14 @@
-name: whisparr
+manifestVersion: 1
+id: franco-whisparr
+name: Whisparr
 description: Whisparr is an adult movie collection manager for Usenet and BitTorrent users.
 icon: https://whisparr.com/logo/256.png
+category: media
+version: "2025.10.4"
+port: 6969
 developer: Umbrel Community
 support: https://github.com/xneo1/portainer_templates
+dependencies: []
+path: ""
+defaultUsername: ""
+defaultPassword: ""

@@ -3,7 +3,7 @@ version: "3.7"
 services:
   app_proxy:
     environment:
-      APP_HOST: calibre-web_server_1
+      APP_HOST: franco-calibre-web-auto_server_1
       APP_PORT: 8083
 
   server:
@@ -27,6 +27,4 @@ services:
       - ${APP_DATA_DIR}/data/books:/cwa-book-ingest
       - ${APP_DATA_DIR}/data/plugins:/config/.config/calibre/plugins
       - ${APP_DATA_DIR}/data/library:/calibre-library
-    ports:
-      - 8083:8083
     restart: on-failure

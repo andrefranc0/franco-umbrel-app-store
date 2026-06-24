@@ -19,7 +19,7 @@ website: https://github.com/crocodilestick/Calibre-Web-Automated
 dependencies: []
 repo: https://github.com/crocodilestick/Calibre-Web-Automated
 support: https://github.com/crocodilestick/Calibre-Web-Automated/issues
-port: 8083
+port: 8098
 gallery:
   - 1.jpg
   - 2.jpg

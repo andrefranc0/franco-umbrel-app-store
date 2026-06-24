@@ -3,7 +3,7 @@ version: "3.7"
 services:
   app_proxy:
     environment:
-      APP_HOST: franco-calibre-web-auto_server_1
+      APP_HOST: calibre-web_server_1
       APP_PORT: 8083
 
   server:

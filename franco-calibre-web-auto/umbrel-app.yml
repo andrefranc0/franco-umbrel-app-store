@@ -1,0 +1,48 @@
+manifestVersion: 1
+id: calibre-web-auto
+category: files
+name: Calibre Web Automated
+version: "4.0.6"
+tagline: A clean and automated web app for your eBooks
+description: >-
+  Calibre-Web is a web app providing a clean interface for browsing, reading and downloading eBooks using an existing Calibre database.
+  It is also possible to integrate google drive and edit metadata and your calibre library through the app itself. 
+  
+  
+  🛠️ SET-UP INSTRUCTIONS
+
+    - Library Setup: On the initial setup screen, enter /books as your calibre library location.
+    - Uploading eBooks: If you wish to enable the upload feature, navigate to Admin > Edit Basic Configuration > Feature Configuration and toggle "Enable Upload".
+    - Documentation: It is recommended to read through the official documentation available at https://github.com/janeczku/calibre-web/wiki
+developer: crocodilestick
+website: https://github.com/crocodilestick/Calibre-Web-Automated
+dependencies: []
+repo: https://github.com/crocodilestick/Calibre-Web-Automated
+support: https://github.com/crocodilestick/Calibre-Web-Automated/issues
+port: 8083
+gallery:
+  - 1.jpg
+  - 2.jpg
+  - 3.jpg
+path: ""
+defaultUsername: "admin"
+defaultPassword: "admin123"
+torOnly: false
+releaseNotes: >-
+  This update includes several new features and improvements:
+
+
+    - Multi-edit capability for books in the book list
+    - Instapaper configuration support for Kobo sync
+    - Enhanced EPUB reader with page count display and Books button to return to Calibre-Web
+    - Additional EPUB reader theme
+    - Improved performance during search operations
+    - Fixed compatibility with Calibre 9
+    - Fixed read status updates when books are archived
+    - Fixed mass removal of books from shelves
+    - Security improvement: API keys are no longer exposed in config exports
+
+
+  Full release notes can be found here: https://github.com/crocodilestick/Calibre-Web-Automated/releases
+submitter: André Franco
+submission: https://github.com/getumbrel/umbrel-apps/

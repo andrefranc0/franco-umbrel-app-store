@@ -27,6 +27,4 @@ services:
       - ${APP_DATA_DIR}/data/books:/cwa-book-ingest
       - ${APP_DATA_DIR}/data/plugins:/config/.config/calibre/plugins
       - ${APP_DATA_DIR}/data/library:/calibre-library
-    ports:
-      - 8098:8083
     restart: on-failure

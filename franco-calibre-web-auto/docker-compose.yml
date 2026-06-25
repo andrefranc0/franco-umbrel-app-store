@@ -3,7 +3,7 @@ version: "3.7"
 services:
   app_proxy:
     environment:
-      APP_HOST: calibre-web_server_1
+      APP_HOST: franco-calibre-web-auto_server_1
       APP_PORT: 8083
 
   server:
@@ -13,13 +13,8 @@ services:
       - PUID=1000
       - PGID=1000
       - TZ=America/Sao_Paulo
-      # Hardcover API Key required for Hardcover as a Metadata Provider, get one here: https://docs.hardcover.app/api/getting-started/
       - HARDCOVER_TOKEN=eyJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJIYXJkY292ZXIiLCJ2ZXJzaW9uIjoiOCIsImp0aSI6IjVmOTQ1MjA3LTBkZDMtNGU3MS1iMTBiLTM1OTlhNmU4NTg4NCIsImFwcGxpY2F0aW9uSWQiOjIsInN1YiI6IjExODk1NyIsImF1ZCI6IjEiLCJpZCI6IjExODk1NyIsImxvZ2dlZEluIjp0cnVlLCJpYXQiOjE3ODIzNDAxOTYsImV4cCI6MTgxMzg3NjE5NiwiaHR0cHM6Ly9oYXN1cmEuaW8vand0L2NsYWltcyI6eyJ4LWhhc3VyYS1hbGxvd2VkLXJvbGVzIjpbInVzZXIiXSwieC1oYXN1cmEtZGVmYXVsdC1yb2xlIjoidXNlciIsIngtaGFzdXJhLXJvbGUiOiJ1c2VyIiwiWC1oYXN1cmEtdXNlci1pZCI6IjExODk1NyJ9LCJ1c2VyIjp7ImlkIjoxMTg5NTd9fQ.r12DxHFiP_RODUe9Ps4qbQ42XzE7LSaKhaR8DEsXdBQ
-      # If your library is on a network share (e.g., NFS/SMB), disable WAL to reduce locking issues
-      # Accepts: true/false (default: false)
       - NETWORK_SHARE_MODE=false
-      # Override the default port (8083) for the web server.
-      # Accepts any valid port number.
       - CWA_PORT_OVERRIDE=8083
     volumes:
       - ${APP_DATA_DIR}/data/config:/config

@@ -1,0 +1,11 @@
+services:
+  app:
+    image: teamspeaksystems/teamspeak6-server:latest
+    restart: unless-stopped
+    ports:
+      - "9987:9987/udp"
+      - "30033:30033/tcp"
+    environment:
+      - TSSERVER_LICENSE_ACCEPTED=accept
+    volumes:
+      - ${APP_DATA_DIR}:/var/tsserver

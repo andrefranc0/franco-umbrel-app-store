@@ -1,4 +1,8 @@
 services:
+  app_proxy:
+    environment:
+      APP_HOST: franco-ts6_app_1
+      APP_PORT: 9987
   app:
     image: teamspeaksystems/teamspeak6-server:latest
     restart: unless-stopped
@@ -8,4 +12,6 @@ services:
     environment:
       - TSSERVER_LICENSE_ACCEPTED=accept
     volumes:
-      - ${APP_DATA_DIR}:/var/tsserver
+      - ts6-data:/var/tsserver
+volumes:
+  ts6-data:

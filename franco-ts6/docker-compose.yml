@@ -1,6 +1,7 @@
 services:
   app:
     image: teamspeaksystems/teamspeak6-server:latest
+    user: "1000:1000"
     restart: unless-stopped
     ports:
       - "9987:9987/udp"

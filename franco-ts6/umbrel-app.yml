@@ -1,0 +1,14 @@
+manifestVersion: 1
+id: franco-teamspeak6
+name: TeamSpeak 6 Server
+description: TeamSpeak 6 Server is a voice communication server for hosting your own TeamSpeak community.
+icon: https://teamspeak.com/user/themes/teamspeak/images/favicon.png
+category: social
+version: "6.0.0"
+developer: TeamSpeak Systems GmbH
+support: https://community.teamspeak.com/
+dependencies: []
+path: ""
+defaultUsername: ""
+defaultPassword: ""
+port: 9987

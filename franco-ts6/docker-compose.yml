@@ -7,6 +7,9 @@ services:
       - "30033:30033/tcp"
     environment:
       - TSSERVER_LICENSE_ACCEPTED=accept
+      - TSSERVER_QUERY_SSH_ENABLED
+      - TSSERVER_QUERY_SSH_PORT=10022
+      - TSSERVER_QUERY_ALLOW_LIST=allow.txt
     volumes:
       - ts6-data:/var/tsserver
 volumes:

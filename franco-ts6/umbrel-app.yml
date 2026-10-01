@@ -4,7 +4,7 @@ name: TeamSpeak 6
 description: TeamSpeak 6 Server
 icon: https://www.teamspeak.com/user/themes/teamspeak/images/logos/teamspeak.svg
 category: social
-version: "6.0.0-beta12.1"
+version: "6.0.0-beta13.1"
 developer: Franco
 support: https://github.com/
 dependencies: []

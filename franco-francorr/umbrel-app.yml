@@ -3,7 +3,7 @@ id: franco-francorr
 name: Francorr
 tagline: Indexador de links do Discord/Drive para o Sonarr
 category: media
-version: "1.0.5"
+version: "1.0.6"
 port: 8090
 description: >-
   Indexa links HTTP (como Google Drive) postados em um canal do Discord
@@ -16,4 +16,4 @@ icon: https://raw.githubusercontent.com/andrefranc0/franco-umbrel-app-store/mast
 gallery: []
 path: ""
 releaseNotes: >-
-  Download do Drive integrado ao Sonarr via Torrent Blackhole (pasta francorr).
+  Leitura mais tolerante dos .torrent gravados pelo Sonarr (Torrent Blackhole).

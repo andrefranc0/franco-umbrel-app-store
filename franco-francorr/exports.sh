@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+
+export APP_DISCORD_TOKEN="${APP_DISCORD_TOKEN}"
+export APP_DISCORD_CHANNEL_ID="${APP_DISCORD_CHANNEL_ID}"

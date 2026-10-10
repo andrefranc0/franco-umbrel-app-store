@@ -10,14 +10,15 @@ services:
     image: python:3.11-slim
     restart: on-failure
     command: >
-      sh -c "apt-get update && apt-get install -y ffmpeg &&
+      sh -c "apt-get update && apt-get install -y ffmpeg curl &&
              pip install --no-cache-dir fastapi uvicorn discord.py gdown &&
+             mkdir -p /app/data &&
+             curl -sSL https://raw.githubusercontent.com/andrefranc0/franco-umbrel-app-store/main/franco-francorr/main.py -o /app/main.py &&
              python /app/main.py"
     environment:
       - DISCORD_TOKEN=${APP_DISCORD_TOKEN}
       - DISCORD_CHANNEL_ID=${APP_DISCORD_CHANNEL_ID}
       - DOWNLOAD_DIR=/downloads
     volumes:
-      - ${APP_DATA_DIR}/main.py:/app/main.py
       - ${APP_DATA_DIR}/data:/app/data
       - ${UMBREL_ROOT}/data/storage/downloads:/downloads

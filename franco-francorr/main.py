@@ -11,7 +11,6 @@ import threading
 APP = FastAPI()
 DB_PATH = "/app/data/database.db"
 
-# Inicialização do Banco de Dados
 def init_db():
     os.makedirs("/app/data", exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
@@ -29,7 +28,6 @@ def init_db():
 
 init_db()
 
-# Bot do Discord
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN", "")
 DISCORD_CHANNEL_ID = int(os.getenv("DISCORD_CHANNEL_ID", "0"))
 
@@ -60,6 +58,11 @@ def run_bot():
         bot.run(DISCORD_TOKEN)
 
 threading.Thread(target=run_bot, daemon=True).start()
+
+# Rota raiz para o Healthcheck do Umbrel OS
+@APP.get("/")
+def healthcheck():
+    return {"status": "ok", "app": "Francorr"}
 
 # Rota API Torznab para o Sonarr
 @APP.get("/api")

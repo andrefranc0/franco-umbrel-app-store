@@ -338,6 +338,21 @@ def next_job():
     return row
 
 
+def drive_file_id(url):
+    m = re.search(r"/d/([A-Za-z0-9_-]{10,})", url) or re.search(r"[?&]id=([A-Za-z0-9_-]{10,})", url)
+    return m.group(1) if m else None
+
+
+def call_gdown(fn, **kwargs):
+    """Chama o gdown só com os parâmetros que a versão instalada aceita (a API muda entre versões)."""
+    import inspect
+
+    params = inspect.signature(fn).parameters
+    if not any(p.kind == p.VAR_KEYWORD for p in params.values()):
+        kwargs = {k: v for k, v in kwargs.items() if k in params}
+    return fn(**kwargs)
+
+
 def run_job(job):
     job_id, name, url = job
     safe = safe_name(name)
@@ -350,9 +365,11 @@ def run_job(job):
 
         print(f"Baixando: {name}", flush=True)
         if "/folders/" in url:
-            gdown.download_folder(url=url, output=dl, quiet=True, remaining_ok=True)
+            call_gdown(gdown.download_folder, url=url, output=dl, quiet=True, remaining_ok=True)
         else:
-            gdown.download(url=url, output=dl + os.sep, quiet=True, fuzzy=True)
+            fid = drive_file_id(url)
+            dl_url = f"https://drive.google.com/uc?id={fid}" if fid else url
+            call_gdown(gdown.download, url=dl_url, output=dl + os.sep, quiet=True, fuzzy=True)
         files = [os.path.join(r, f) for r, _, fs in os.walk(dl) for f in fs]
         if not files:
             raise RuntimeError("nada foi baixado (link privado ou cota do Drive excedida?)")

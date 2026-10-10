@@ -238,6 +238,13 @@ def setup_dirs():
             os.chown(d, SONARR_UID, SONARR_GID)
         except OSError:
             pass
+    # arquivos rejeitados por uma versão anterior voltam para a fila de leitura
+    for fname in os.listdir(TORRENT_DIR):
+        if fname.endswith(".torrent.invalid"):
+            try:
+                os.replace(os.path.join(TORRENT_DIR, fname), os.path.join(TORRENT_DIR, fname[: -len(".invalid")]))
+            except OSError:
+                pass
 
 
 def fix_perms(path):
@@ -260,6 +267,23 @@ def set_job(job_id, status, error=None):
         )
 
 
+def read_torrent(path):
+    """Devolve (url, nome) de um .torrent do Francorr; tolera arquivos fora do padrão."""
+    with open(path, "rb") as f:
+        data = f.read()
+    try:
+        top, _ = bdecode(data)
+        return top[b"comment"].decode(), top[b"info"][b"name"].decode()
+    except Exception:  # noqa: BLE001
+        pass
+    # plano B: procura o link do Drive no texto bruto e usa o nome do arquivo como título
+    m = re.search(rb"https?://[A-Za-z0-9\-._~:/?#@!$&'()*+,;=%]+", data)
+    if m:
+        url = re.sub(r"\d{1,3}:[a-z].*$", "", m.group(0).decode(errors="ignore"))
+        return url, os.path.splitext(os.path.basename(path))[0]
+    raise ValueError(f"arquivo inválido ({len(data)} bytes, início: {data[:60]!r})")
+
+
 def scan_torrent_dir():
     """Transforma os .torrent gravados pelo Sonarr em downloads na fila."""
     try:
@@ -273,10 +297,7 @@ def scan_torrent_dir():
         try:
             if time.time() - os.path.getmtime(path) < 2:  # ainda sendo gravado
                 continue
-            with open(path, "rb") as f:
-                top, _ = bdecode(f.read())
-            url = top[b"comment"].decode()
-            name = top[b"info"][b"name"].decode()
+            url, name = read_torrent(path)
             if not url.startswith("http"):
                 raise ValueError("torrent sem link do Francorr")
         except Exception as e:  # noqa: BLE001

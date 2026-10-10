@@ -7,31 +7,6 @@ services:
       APP_PORT: 8090
 
   web:
-    image: local/franco-francorr:1.0.0
-    build:
-      context: ./app
-      dockerfile: Dockerfile
-    restart: on-failure
-    environment:
-      - DISCORD_TOKEN=${APP_DISCORD_TOKEN}
-      - DISCORD_CHANNEL_ID=${APP_DISCORD_CHANNEL_ID}
-      - DOWNLOAD_DIR=/downloads
-    Esse erro voltou a acontecer porque o Docker tentou buscar a imagem `franco-francorr` no Docker Hub público ao invés de construí-la localmente no seu servidor.
-
-No UmbrelOS, para que o sistema entenda que a imagem precisa ser criada localmente a partir do seu `Dockerfile` (sem tentar puxar da nuvem), o arquivo `docker-compose.yml` precisa usar o parâmetro **`build:`** diretamente, **sem nenhuma declaração da chave `image:`**.
-
-Substitua o conteúdo de **`franco-francorr/docker-compose.yml`** no seu GitHub exatamente por isto:
-
-```yaml
-version: "3.7"
-
-services:
-  app_proxy:
-    environment:
-      APP_HOST: franco-francorr_web_1
-      APP_PORT: 8090
-
-  web:
     build: ./app
     restart: on-failure
     environment:

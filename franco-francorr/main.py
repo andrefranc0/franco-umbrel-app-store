@@ -1,12 +1,16 @@
 import asyncio
+import hashlib
 import html
 import json
 import os
 import re
+import shutil
 import sqlite3
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from email.utils import format_datetime
+from urllib.parse import quote
 
 import discord
 from fastapi import FastAPI, Query, Request
@@ -16,6 +20,16 @@ DATA_DIR = os.getenv("DATA_DIR", "/app/data")
 DB_PATH = os.path.join(DATA_DIR, "database.db")
 CONFIG_PATH = os.path.join(DATA_DIR, "config.json")
 SELF_URL = os.getenv("SELF_URL", "http://franco-francorr_web_1:8090")
+
+# Pastas de download (a pasta /downloads do Umbrel é a mesma que o Sonarr enxerga)
+DOWNLOAD_ROOT = os.getenv("DOWNLOAD_DIR", "/downloads")
+FRANCORR_DIR = os.path.join(DOWNLOAD_ROOT, "francorr")
+TORRENT_DIR = os.path.join(FRANCORR_DIR, "torrents")  # Sonarr grava os .torrent aqui
+COMPLETE_DIR = os.path.join(FRANCORR_DIR, "complete")  # o app entrega os downloads prontos aqui
+TMP_DIR = os.path.join(FRANCORR_DIR, ".tmp")
+SONARR_UID = int(os.getenv("SONARR_UID", "1000"))
+SONARR_GID = int(os.getenv("SONARR_GID", "1000"))
+
 os.makedirs(DATA_DIR, exist_ok=True)
 
 # ---------------------------------------------------------------- parser
@@ -111,6 +125,19 @@ def init_db():
         cols = [r[1] for r in conn.execute("PRAGMA table_info(links)")]
         if "extra" not in cols:  # texto completo do post, usado na busca (nome em inglês etc.)
             conn.execute("ALTER TABLE links ADD COLUMN extra TEXT")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS jobs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT,
+                url TEXT,
+                status TEXT,
+                error TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP
+            )
+            """
+        )
 
 
 init_db()
@@ -133,6 +160,227 @@ def save_config(cfg):
     with open(CONFIG_PATH, "w") as f:
         json.dump(cfg, f)
     os.chmod(CONFIG_PATH, 0o600)
+
+
+# ---------------------------------------------------------------- downloader
+# Como o Sonarr recebe os downloads (cliente "Torrent Blackhole"):
+#  1. o indexador entrega um .torrent válido, mas falso, com o link do Drive no campo "comment";
+#  2. o Sonarr grava esse arquivo em TORRENT_DIR;
+#  3. o app lê o arquivo, baixa o link com gdown e entrega a pasta pronta em COMPLETE_DIR;
+#  4. o Sonarr monitora COMPLETE_DIR ("Watch Folder") e importa o episódio.
+FAKE_SIZE = 1048576
+PIECE_LEN = 262144
+
+
+def safe_name(name):
+    name = re.sub(r'[\\/:*?"<>|\x00-\x1f]+', " ", name or "")
+    return re.sub(r"\s+", " ", name).strip(" .")[:180] or "download"
+
+
+def bencode(x):
+    if isinstance(x, int):
+        return b"i%de" % x
+    if isinstance(x, str):
+        x = x.encode()
+    if isinstance(x, bytes):
+        return b"%d:%s" % (len(x), x)
+    if isinstance(x, list):
+        return b"l" + b"".join(bencode(i) for i in x) + b"e"
+    if isinstance(x, dict):
+        items = sorted(((k.encode() if isinstance(k, str) else k), v) for k, v in x.items())
+        return b"d" + b"".join(bencode(k) + bencode(v) for k, v in items) + b"e"
+    raise TypeError(type(x))
+
+
+def bdecode(data, i=0):
+    c = data[i : i + 1]
+    if c == b"i":
+        j = data.index(b"e", i)
+        return int(data[i + 1 : j]), j + 1
+    if c == b"l":
+        i, out = i + 1, []
+        while data[i : i + 1] != b"e":
+            v, i = bdecode(data, i)
+            out.append(v)
+        return out, i + 1
+    if c == b"d":
+        i, out = i + 1, {}
+        while data[i : i + 1] != b"e":
+            k, i = bdecode(data, i)
+            out[k], i = bdecode(data, i)
+        return out, i + 1
+    j = data.index(b":", i)
+    start = j + 1
+    end = start + int(data[i:j])
+    return data[start:end], end
+
+
+def torrent_info(title, url):
+    pieces = b"".join(
+        hashlib.sha1(f"{url}#{n}".encode()).digest() for n in range(FAKE_SIZE // PIECE_LEN)
+    )
+    return {"length": FAKE_SIZE, "name": safe_name(title), "piece length": PIECE_LEN, "pieces": pieces}
+
+
+def make_torrent(title, url):
+    return bencode({"comment": url, "created by": "Francorr", "info": torrent_info(title, url)})
+
+
+def info_hash(title, url):
+    return hashlib.sha1(bencode(torrent_info(title, url))).hexdigest()
+
+
+def setup_dirs():
+    for d in (FRANCORR_DIR, TORRENT_DIR, COMPLETE_DIR, TMP_DIR):
+        os.makedirs(d, exist_ok=True)
+        try:
+            os.chmod(d, 0o777)
+            os.chown(d, SONARR_UID, SONARR_GID)
+        except OSError:
+            pass
+
+
+def fix_perms(path):
+    """Deixa o conteúdo legível/gravável pelo Sonarr (que roda com outro usuário)."""
+    for root, _dirs, files in os.walk(path):
+        targets = [(root, 0o777)] + [(os.path.join(root, f), 0o666) for f in files]
+        for p, mode in targets:
+            try:
+                os.chmod(p, mode)
+                os.chown(p, SONARR_UID, SONARR_GID)
+            except OSError:
+                pass
+
+
+def set_job(job_id, status, error=None):
+    with db() as conn:
+        conn.execute(
+            "UPDATE jobs SET status = ?, error = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (status, error, job_id),
+        )
+
+
+def scan_torrent_dir():
+    """Transforma os .torrent gravados pelo Sonarr em downloads na fila."""
+    try:
+        names = os.listdir(TORRENT_DIR)
+    except FileNotFoundError:
+        return
+    for fname in names:
+        if not fname.lower().endswith(".torrent"):
+            continue
+        path = os.path.join(TORRENT_DIR, fname)
+        try:
+            if time.time() - os.path.getmtime(path) < 2:  # ainda sendo gravado
+                continue
+            with open(path, "rb") as f:
+                top, _ = bdecode(f.read())
+            url = top[b"comment"].decode()
+            name = top[b"info"][b"name"].decode()
+            if not url.startswith("http"):
+                raise ValueError("torrent sem link do Francorr")
+        except Exception as e:  # noqa: BLE001
+            print(f"Ignorando {fname}: {e}", flush=True)
+            try:
+                os.replace(path, path + ".invalid")
+            except OSError:
+                pass
+            continue
+        with db() as conn:
+            last = conn.execute(
+                "SELECT status FROM jobs WHERE url = ? ORDER BY id DESC LIMIT 1", (url,)
+            ).fetchone()
+            ready = os.path.isdir(os.path.join(COMPLETE_DIR, safe_name(name)))
+            skip = last and (last[0] in ("queued", "downloading") or (last[0] == "done" and ready))
+            if not skip:
+                conn.execute(
+                    "INSERT INTO jobs (name, url, status, updated_at) VALUES (?, ?, 'queued', CURRENT_TIMESTAMP)",
+                    (name, url),
+                )
+                print(f"Download na fila: {name}", flush=True)
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
+def next_job():
+    with db() as conn:
+        row = conn.execute(
+            "SELECT id, name, url FROM jobs WHERE status = 'queued' ORDER BY id LIMIT 1"
+        ).fetchone()
+        if row:
+            conn.execute(
+                "UPDATE jobs SET status = 'downloading', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (row[0],),
+            )
+    return row
+
+
+def run_job(job):
+    job_id, name, url = job
+    safe = safe_name(name)
+    work = os.path.join(TMP_DIR, str(job_id))
+    dl = os.path.join(work, "dl")
+    try:
+        shutil.rmtree(work, ignore_errors=True)
+        os.makedirs(dl)
+        import gdown
+
+        print(f"Baixando: {name}", flush=True)
+        if "/folders/" in url:
+            gdown.download_folder(url=url, output=dl, quiet=True, remaining_ok=True)
+        else:
+            gdown.download(url=url, output=dl + os.sep, quiet=True, fuzzy=True)
+        files = [os.path.join(r, f) for r, _, fs in os.walk(dl) for f in fs]
+        if not files:
+            raise RuntimeError("nada foi baixado (link privado ou cota do Drive excedida?)")
+
+        stage = os.path.join(work, safe)
+        os.rename(dl, stage)
+        if len(files) == 1:  # arquivo único: usa o título da release como nome (ajuda o Sonarr)
+            old = os.path.join(stage, os.path.relpath(files[0], dl))
+            new = os.path.join(stage, safe + os.path.splitext(old)[1])
+            if old != new:
+                os.rename(old, new)
+            for root, dirs, _f in os.walk(stage, topdown=False):  # remove subpastas vazias
+                for d in dirs:
+                    try:
+                        os.rmdir(os.path.join(root, d))
+                    except OSError:
+                        pass
+        fix_perms(stage)
+        final = os.path.join(COMPLETE_DIR, safe)
+        shutil.rmtree(final, ignore_errors=True)
+        os.rename(stage, final)  # renomeia a pasta inteira de uma vez: o Sonarr nunca vê pela metade
+        set_job(job_id, "done")
+        print(f"Download concluído: {final}", flush=True)
+    except Exception as e:  # noqa: BLE001
+        set_job(job_id, "failed", str(e)[:300])
+        print(f"Download falhou ({name}): {e}", flush=True)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+async def downloader_loop():
+    try:
+        await asyncio.to_thread(setup_dirs)
+        with db() as conn:
+            conn.execute("UPDATE jobs SET status = 'queued' WHERE status = 'downloading'")
+    except Exception as e:  # noqa: BLE001
+        print(f"Erro ao preparar pastas de download: {e}", flush=True)
+    while True:
+        try:
+            await asyncio.to_thread(scan_torrent_dir)
+            job = await asyncio.to_thread(next_job)
+            if job:
+                await asyncio.to_thread(run_job, job)
+                continue
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            print(f"Erro no downloader: {e}", flush=True)
+        await asyncio.sleep(5)
 
 
 # ---------------------------------------------------------------- bot
@@ -216,7 +464,9 @@ async def start_bot():
 @asynccontextmanager
 async def lifespan(_app):
     await start_bot()
+    dl_task = asyncio.create_task(downloader_loop())
     yield
+    dl_task.cancel()
     await stop_bot()
 
 
@@ -248,6 +498,12 @@ PAGE = """<!doctype html>
 
 <h3>Configurar no Sonarr</h3>
 <div class="box">Indexador (Torznab):<br><code>__SELF_URL__/api</code></div>
+<div class="box">Cliente de download (Torrent Blackhole):<br>
+Torrent Folder: <code>/downloads/francorr/torrents</code><br>
+Watch Folder: <code>/downloads/francorr/complete</code></div>
+
+<h3>Downloads</h3>
+<div class="box">__JOBS__</div>
 
 <script>
 async function save(){
@@ -258,6 +514,19 @@ async function save(){
   document.getElementById('token').value = '';
 }
 </script></body></html>"""
+
+
+def jobs_html():
+    with db() as conn:
+        rows = conn.execute("SELECT name, status, error FROM jobs ORDER BY id DESC LIMIT 8").fetchall()
+    if not rows:
+        return "Nenhum download ainda."
+    label = {"queued": "na fila", "downloading": "baixando", "done": "concluído", "failed": "falhou"}
+    out = []
+    for name, status, error in rows:
+        extra = f" - {html.escape(error)}" if error else ""
+        out.append(f"<div>{label.get(status, status)}: {html.escape(name or '')}{extra}</div>")
+    return "".join(out)
 
 
 @APP.get("/", response_class=HTMLResponse)
@@ -271,11 +540,10 @@ def home():
         "__CHANNEL__": html.escape(str(cfg["channel_id"]), quote=True),
         "__TOKEN_HINT__": "(já salvo - deixe vazio para manter)" if cfg["token"] else "cole o token aqui",
         "__SELF_URL__": html.escape(SELF_URL),
+        "__JOBS__": jobs_html(),
     }
-    page = PAGE
-    for key, val in values.items():
-        page = page.replace(key, val)
-    return page
+    # substituição em uma passada só, para o conteúdo inserido nunca ser reinterpretado
+    return re.sub(r"__(?:STATUS|COUNT|CHANNEL|TOKEN_HINT|SELF_URL|JOBS)__", lambda m: values[m.group(0)], PAGE)
 
 
 @APP.post("/config")
@@ -350,6 +618,9 @@ def torznab_api(t: str = Query(None), q: str = Query(None), limit: int = Query(5
       <enclosure url="{dl}" length="1048576000" type="application/x-bittorrent" />
       <torznab:attr name="category" value="5000" />
       <torznab:attr name="size" value="1048576000" />
+      <torznab:attr name="infohash" value="{info_hash(title, url)}" />
+      <torznab:attr name="seeders" value="1" />
+      <torznab:attr name="peers" value="1" />
     </item>"""
 
     rss = f"""<?xml version="1.0" encoding="UTF-8"?>
@@ -362,9 +633,17 @@ def torznab_api(t: str = Query(None), q: str = Query(None), limit: int = Query(5
 
 
 @APP.get("/download")
-def download(id: int):
+def download(id: int, redirect: int = 0):
     with db() as conn:
-        row = conn.execute("SELECT url FROM links WHERE id = ?", (id,)).fetchone()
+        row = conn.execute("SELECT title, url FROM links WHERE id = ?", (id,)).fetchone()
     if not row:
         return JSONResponse(status_code=404, content={"error": "Link não encontrado"})
-    return Response(status_code=302, headers={"Location": row[0]})
+    title, url = row
+    if redirect:  # ?redirect=1 abre o link original do Drive (uso manual)
+        return Response(status_code=302, headers={"Location": url})
+    # Para o Sonarr: um .torrent válido que carrega o link do Drive no campo "comment"
+    return Response(
+        content=make_torrent(title, url),
+        media_type="application/x-bittorrent",
+        headers={"Content-Disposition": "attachment; filename*=UTF-8''" + quote(safe_name(title) + ".torrent")},
+    )

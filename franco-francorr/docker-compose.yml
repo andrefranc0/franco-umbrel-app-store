@@ -7,6 +7,7 @@ services:
       APP_PORT: 8090
 
   web:
+    image: franco-francorr:latest
     build:
       context: ./app
       dockerfile: Dockerfile

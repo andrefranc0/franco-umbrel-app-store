@@ -1,0 +1,19 @@
+version: "3.7"
+
+services:
+  app_proxy:
+    environment:
+      APP_HOST: franco-francorr_web_1
+      APP_PORT: 8090
+
+  web:
+    build: ./app
+    image: franco-francorr:1.0.0
+    restart: on-failure
+    environment:
+      - DISCORD_TOKEN=${APP_DISCORD_TOKEN}
+      - DISCORD_CHANNEL_ID=${APP_DISCORD_CHANNEL_ID}
+      - DOWNLOAD_DIR=/downloads
+    volumes:
+      - ${APP_DATA_DIR}/data:/app/data
+      - ${UMBREL_ROOT}/data/storage/downloads:/downloads

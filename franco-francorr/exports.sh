@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/usr/bin/env sh
 
 export APP_DISCORD_TOKEN="${APP_DISCORD_TOKEN}"
 export APP_DISCORD_CHANNEL_ID="${APP_DISCORD_CHANNEL_ID}"

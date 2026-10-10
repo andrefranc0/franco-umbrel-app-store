@@ -10,8 +10,8 @@ services:
     build: ./app
     restart: on-failure
     environment:
-      - DISCORD_TOKEN=${APP_DISCORD_TOKEN}
-      - DISCORD_CHANNEL_ID=${APP_DISCORD_CHANNEL_ID}
+      - DISCORD_TOKEN
+      - DISCORD_CHANNEL_ID
       - DOWNLOAD_DIR=/downloads
     volumes:
       - ${APP_DATA_DIR}/data:/app/data

@@ -9,9 +9,9 @@ description: >-
   Indexa links HTTP (como Google Drive) postados em canais do Discord 
   e serve como um indexador Torznab e cliente de download para o Sonarr.
 developer: Francorr
-website: https://github.com/seu-usuario
-repo: https://github.com/seu-usuario/francorrznab
-support: https://github.com/seu-usuario/francorrznab/issues
+website: https://github.com/andrefranc0/franco-umbrel-app-store
+repo: https://github.com/andrefranc0/franco-umbrel-app-store
+support: https://github.com/andrefranc0/franco-umbrel-app-store/issues
 port: 8090
 gallery: []
 path: ""

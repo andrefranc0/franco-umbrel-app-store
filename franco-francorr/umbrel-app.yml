@@ -12,7 +12,7 @@ developer: Francorr
 website: https://github.com/andrefranc0/franco-umbrel-app-store
 repo: https://github.com/andrefranc0/franco-umbrel-app-store
 support: https://github.com/andrefranc0/franco-umbrel-app-store/issues
+icon: "icon.png"
 gallery: []
 path: ""
 defaultWithStats: true
-icon: "icon.png"

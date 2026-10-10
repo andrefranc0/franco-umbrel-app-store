@@ -7,8 +7,7 @@ services:
       APP_PORT: 8090
 
   web:
-    build: ./app
-    image: franco-francorr_web:latest
+    build: .
     restart: on-failure
     environment:
       - DISCORD_TOKEN=${APP_DISCORD_TOKEN}

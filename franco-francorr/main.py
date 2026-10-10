@@ -1,3 +1,4 @@
+# Francorr v1.0.8 - se este código estiver no seu repositório, o arquivo tem "def read_torrent" e "def call_gdown"
 import asyncio
 import hashlib
 import html
@@ -20,6 +21,7 @@ DATA_DIR = os.getenv("DATA_DIR", "/app/data")
 DB_PATH = os.path.join(DATA_DIR, "database.db")
 CONFIG_PATH = os.path.join(DATA_DIR, "config.json")
 SELF_URL = os.getenv("SELF_URL", "http://franco-francorr_web_1:8090")
+BUILD = "1.0.8"  # mesma versão do umbrel-app.yml; aparece no log e na página para conferir o que está rodando
 
 # Pastas de download (a pasta /downloads do Umbrel é a mesma que o Sonarr enxerga)
 DOWNLOAD_ROOT = os.getenv("DOWNLOAD_DIR", "/downloads")
@@ -284,6 +286,9 @@ def read_torrent(path):
     raise ValueError(f"arquivo inválido ({len(data)} bytes, início: {data[:60]!r})")
 
 
+_seen = {}  # caminho -> (tamanho, mtime) da varredura anterior
+
+
 def scan_torrent_dir():
     """Transforma os .torrent gravados pelo Sonarr em downloads na fila."""
     try:
@@ -295,18 +300,36 @@ def scan_torrent_dir():
             continue
         path = os.path.join(TORRENT_DIR, fname)
         try:
-            if time.time() - os.path.getmtime(path) < 2:  # ainda sendo gravado
+            st = os.stat(path)
+            age = time.time() - st.st_mtime
+            if age < 2:  # ainda sendo gravado
                 continue
-            url, name = read_torrent(path)
-            if not url.startswith("http"):
-                raise ValueError("torrent sem link do Francorr")
+            # Em discos externos/de rede o conteúdo pode demorar a aparecer: só lê quando o
+            # tamanho é maior que zero e igual ao da varredura anterior.
+            sig = (st.st_size, st.st_mtime)
+            if st.st_size == 0 or _seen.get(path) != sig:
+                _seen[path] = sig
+                if st.st_size == 0 and age > 60:
+                    raise ValueError("arquivo vazio")
+                continue
+            try:
+                url, name = read_torrent(path)
+                if not url.startswith("http"):
+                    raise ValueError("torrent sem link do Francorr")
+            except Exception:  # noqa: BLE001
+                if age < 60:  # pode ser leitura antes da hora: tenta de novo na próxima varredura
+                    _seen.pop(path, None)
+                    continue
+                raise
         except Exception as e:  # noqa: BLE001
             print(f"Ignorando {fname}: {e}", flush=True)
+            _seen.pop(path, None)
             try:
                 os.replace(path, path + ".invalid")
             except OSError:
                 pass
             continue
+        _seen.pop(path, None)
         with db() as conn:
             last = conn.execute(
                 "SELECT status FROM jobs WHERE url = ? ORDER BY id DESC LIMIT 1", (url,)
@@ -501,6 +524,7 @@ async def start_bot():
 
 @asynccontextmanager
 async def lifespan(_app):
+    print(f"Francorr código v{BUILD} iniciado", flush=True)
     await start_bot()
     dl_task = asyncio.create_task(downloader_loop())
     yield
@@ -542,6 +566,7 @@ Watch Folder: <code>/downloads/francorr/complete</code></div>
 
 <h3>Downloads</h3>
 <div class="box">__JOBS__</div>
+<p style="color:#777;font-size:12px">Código v__BUILD__</p>
 
 <script>
 async function save(){
@@ -579,9 +604,10 @@ def home():
         "__TOKEN_HINT__": "(já salvo - deixe vazio para manter)" if cfg["token"] else "cole o token aqui",
         "__SELF_URL__": html.escape(SELF_URL),
         "__JOBS__": jobs_html(),
+        "__BUILD__": BUILD,
     }
     # substituição em uma passada só, para o conteúdo inserido nunca ser reinterpretado
-    return re.sub(r"__(?:STATUS|COUNT|CHANNEL|TOKEN_HINT|SELF_URL|JOBS)__", lambda m: values[m.group(0)], PAGE)
+    return re.sub(r"__(?:STATUS|COUNT|CHANNEL|TOKEN_HINT|SELF_URL|JOBS|BUILD)__", lambda m: values[m.group(0)], PAGE)
 
 
 @APP.post("/config")

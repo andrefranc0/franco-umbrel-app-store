@@ -156,27 +156,27 @@ PAGE = """<!doctype html>
  .box{background:#1c1c1c;border-radius:10px;padding:14px;margin-bottom:18px}
 </style></head><body>
 <h1>Francorr</h1>
-<div class="box"><b>Status do bot:</b> <span id="status">{status}</span><br>
-<b>Links indexados:</b> {count}</div>
+<div class="box"><b>Status do bot:</b> <span id="status">__STATUS__</span><br>
+<b>Links indexados:</b> __COUNT__</div>
 
 <h3>Configuração do Discord</h3>
 <label>Token do bot</label>
-<input id="token" type="password" placeholder="{token_hint}">
+<input id="token" type="password" placeholder="__TOKEN_HINT__">
 <label>ID do canal</label>
-<input id="channel" value="{channel}" placeholder="123456789012345678">
+<input id="channel" value="__CHANNEL__" placeholder="123456789012345678">
 <button onclick="save()">Salvar e reiniciar bot</button>
 
 <h3>Configurar no Sonarr</h3>
-<div class="box">Indexador (Torznab):<br><code>{self_url}/api</code></div>
+<div class="box">Indexador (Torznab):<br><code>__SELF_URL__/api</code></div>
 
 <script>
-async function save(){{
-  const r = await fetch('config',{{method:'POST',headers:{{'Content-Type':'application/json'}},
-    body:JSON.stringify({{token:document.getElementById('token').value,channel_id:document.getElementById('channel').value}})}});
+async function save(){
+  const r = await fetch('config',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({token:document.getElementById('token').value,channel_id:document.getElementById('channel').value})});
   const j = await r.json();
   document.getElementById('status').textContent = j.status;
   document.getElementById('token').value = '';
-}}
+}
 </script></body></html>"""
 
 
@@ -185,13 +185,17 @@ def home():
     cfg = load_config()
     with db() as conn:
         count = conn.execute("SELECT COUNT(*) FROM links").fetchone()[0]
-    return PAGE.format(
-        status=html.escape(bot_state["status"]),
-        count=count,
-        channel=html.escape(str(cfg["channel_id"])),
-        token_hint="(já salvo - deixe vazio para manter)" if cfg["token"] else "cole o token aqui",
-        self_url=SELF_URL,
-    )
+    values = {
+        "__STATUS__": html.escape(bot_state["status"]),
+        "__COUNT__": str(count),
+        "__CHANNEL__": html.escape(str(cfg["channel_id"]), quote=True),
+        "__TOKEN_HINT__": "(já salvo - deixe vazio para manter)" if cfg["token"] else "cole o token aqui",
+        "__SELF_URL__": html.escape(SELF_URL),
+    }
+    page = PAGE
+    for key, val in values.items():
+        page = page.replace(key, val)
+    return page
 
 
 @APP.post("/config")

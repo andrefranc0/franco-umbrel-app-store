@@ -16,9 +16,79 @@ DATA_DIR = os.getenv("DATA_DIR", "/app/data")
 DB_PATH = os.path.join(DATA_DIR, "database.db")
 CONFIG_PATH = os.path.join(DATA_DIR, "config.json")
 SELF_URL = os.getenv("SELF_URL", "http://franco-francorr_web_1:8090")
-URL_RE = re.compile(r"https?://[^\s<>]+")
-
 os.makedirs(DATA_DIR, exist_ok=True)
+
+# ---------------------------------------------------------------- parser
+# Formato esperado (um post pode ter vários episódios/links):
+#   Anime: **Nome - S02** (**Nome em inglês - S02**)
+#   **Nome - S02E02 - Título do episódio [GRUPO] [pt-br]**
+#   Download via [google-drive](https://drive.google.com/...)
+MD_LINK_RE = re.compile(r"\[([^\]]*)\]\(\s*<?(https?://[^)\s>]+)>?\s*\)")
+URL_RE = re.compile(r"https?://[^\s<>()\[\]]+")
+EP_RE = re.compile(r"\bS\d{1,2}\s?E\d{1,4}\b", re.I)
+
+
+def clean_line(line):
+    """Tira links e marcações do Discord, devolvendo só o texto legível."""
+    line = MD_LINK_RE.sub(" ", line)
+    line = URL_RE.sub(" ", line)
+    line = re.sub(r"\*+|`|~~|\|\||__", "", line)
+    line = re.sub(r"^\s*(#{1,6}\s|>\s|[-•]{1,2}\s)", "", line)
+    return re.sub(r"\s+", " ", line).strip(" -–—:")
+
+
+def message_text(message):
+    parts = [message.content or ""]
+    for e in message.embeds:
+        parts += [e.title or "", e.description or ""]
+        parts += [f"{f.name}\n{f.value}" for f in e.fields]
+    for snap in getattr(message, "message_snapshots", None) or []:  # mensagens encaminhadas
+        parts.append(getattr(snap, "content", "") or "")
+    return "\n".join(p for p in parts if p)
+
+
+def extract_releases(text):
+    """Devolve [(titulo, url, texto_de_busca)] para cada link encontrado."""
+    lines = text.splitlines()
+    cleaned = [clean_line(l) for l in lines]
+    search_text = " ".join(c for c in cleaned if c)
+    fallback = next((c for c in cleaned if re.search(r"[A-Za-zÀ-ÿ0-9]{3,}", c)), "Untitled Release")[:200]
+
+    releases, last_title = [], None
+    for line, plain in zip(lines, cleaned):
+        found = []  # (url, titulo_do_proprio_link)
+        for m in MD_LINK_RE.finditer(line):
+            anchor = clean_line(m.group(1))
+            found.append((m.group(2), anchor if EP_RE.search(anchor) else None))
+        found += [(u, None) for u in URL_RE.findall(MD_LINK_RE.sub(" ", line))]
+
+        if not found:
+            if plain and EP_RE.search(plain):
+                last_title = plain
+            continue
+        for url, own_title in found:
+            title = own_title or last_title or (plain if EP_RE.search(plain) else None) or fallback
+            releases.append((title, url.rstrip(".,;"), search_text))
+    return releases
+
+
+def index_message(message, self_id):
+    """Indexa os links de uma mensagem; ignora o próprio bot e links já vistos."""
+    if message.author.id == self_id:
+        return 0
+    added = 0
+    created = message.created_at.strftime("%Y-%m-%d %H:%M:%S")
+    with db() as conn:
+        for title, url, extra in extract_releases(message_text(message)):
+            if conn.execute("SELECT 1 FROM links WHERE url = ?", (url,)).fetchone():
+                continue
+            conn.execute(
+                "INSERT INTO links (title, url, extra, created_at) VALUES (?, ?, ?, ?)",
+                (title, url, extra, created),
+            )
+            added += 1
+            print(f"Novo link indexado: {title} -> {url}", flush=True)
+    return added
 
 
 # ---------------------------------------------------------------- banco
@@ -38,6 +108,9 @@ def init_db():
             )
             """
         )
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(links)")]
+        if "extra" not in cols:  # texto completo do post, usado na busca (nome em inglês etc.)
+            conn.execute("ALTER TABLE links ADD COLUMN extra TEXT")
 
 
 init_db()
@@ -99,20 +172,27 @@ async def start_bot():
     async def on_ready():
         bot_state["status"] = f"Conectado como {client.user}"
         print(bot_state["status"], flush=True)
+        # importa os últimos posts do canal (sem duplicar o que já foi indexado)
+        try:
+            channel = client.get_channel(channel_id) or await client.fetch_channel(channel_id)
+            total = 0
+            async for m in channel.history(limit=200, oldest_first=True):
+                total += index_message(m, client.user.id)
+            print(f"Histórico importado: {total} link(s) novo(s)", flush=True)
+        except Exception as e:  # noqa: BLE001
+            bot_state["status"] = f"Conectado como {client.user} (sem acesso ao histórico: {e})"
 
     @client.event
     async def on_message(message):
-        if message.channel.id != channel_id or message.author.bot:
-            return
-        urls = URL_RE.findall(message.content)
-        if not urls:
-            return
-        title = URL_RE.sub("", message.content).strip() or "Untitled Release"
-        with db() as conn:
-            conn.executemany(
-                "INSERT INTO links (title, url) VALUES (?, ?)", [(title, u) for u in urls]
-            )
-        print(f"Novo link indexado: {title} -> {urls[0]}", flush=True)
+        # aceita posts de bots/webhooks (só ignora o próprio bot)
+        if message.channel.id == channel_id:
+            index_message(message, client.user.id)
+
+    @client.event
+    async def on_message_edit(_before, after):
+        # embeds e links às vezes só aparecem depois de uma edição
+        if after.channel.id == channel_id:
+            index_message(after, client.user.id)
 
     async def runner():
         bot_state["status"] = "Conectando ao Discord..."
@@ -246,7 +326,8 @@ def torznab_api(t: str = Query(None), q: str = Query(None), limit: int = Query(5
             # "Breaking Bad" casa com "Breaking.Bad.S01E01", "Breaking_Bad..." etc.
             pattern = "%" + "%".join(p for p in re.split(r"[\s._-]+", q.strip()) if p) + "%"
             rows = conn.execute(
-                "SELECT id, title, url, created_at FROM links WHERE title LIKE ? ORDER BY id DESC LIMIT ?",
+                "SELECT id, title, url, created_at FROM links "
+                "WHERE (title || ' ' || COALESCE(extra, '')) LIKE ? ORDER BY id DESC LIMIT ?",
                 (pattern, limit),
             ).fetchall()
         else:

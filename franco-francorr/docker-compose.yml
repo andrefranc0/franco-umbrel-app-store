@@ -9,16 +9,16 @@ services:
   web:
     image: python:3.11-slim
     restart: on-failure
+    working_dir: /app
     command: >
-      sh -c "apt-get update && apt-get install -y ffmpeg curl &&
-             pip install --no-cache-dir fastapi uvicorn discord.py gdown &&
-             mkdir -p /app/data &&
-             curl -sSL https://raw.githubusercontent.com/andrefranc0/franco-umbrel-app-store/main/franco-francorr/main.py -o /app/main.py &&
-             uvicorn app.main:APP --host 0.0.0.0 --port 8090"
+      sh -c "pip install --no-cache-dir -r /app/requirements.txt &&
+             uvicorn main:APP --host 0.0.0.0 --port 8090"
     environment:
-      - DISCORD_TOKEN=${APP_DISCORD_TOKEN}
-      - DISCORD_CHANNEL_ID=${APP_DISCORD_CHANNEL_ID}
-      - DOWNLOAD_DIR=/downloads
+      PYTHONUNBUFFERED: "1"
+      DATA_DIR: /app/data
+      DOWNLOAD_DIR: /downloads
     volumes:
+      - ${APP_DATA_DIR}/main.py:/app/main.py:ro
+      - ${APP_DATA_DIR}/requirements.txt:/app/requirements.txt:ro
       - ${APP_DATA_DIR}/data:/app/data
-      - ${UMBREL_ROOT}/exports/downloads:/downloads
+      - ${UMBREL_ROOT}/data/storage/downloads:/downloads

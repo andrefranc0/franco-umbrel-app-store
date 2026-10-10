@@ -7,7 +7,9 @@ services:
       APP_PORT: 8090
 
   web:
-    build: ./app
+    build:
+      context: ./app
+      dockerfile: Dockerfile
     restart: on-failure
     environment:
       - DISCORD_TOKEN=${APP_DISCORD_TOKEN}

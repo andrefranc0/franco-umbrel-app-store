@@ -1,10 +1,10 @@
 manifestVersion: 1
 id: franco-ts6
-name: TeamSpeak 6
+name: TeamSpeak 6 Server
 description: TeamSpeak 6 Server
 icon: https://teamspeak.com/user/themes/teamspeak/assets/images/mediakit/TS_Stacked_BlueLight.svg
 category: social
-version: "1.0.2"
+version: "1.0.3"
 developer: Franco
 support: https://github.com/
 dependencies: []

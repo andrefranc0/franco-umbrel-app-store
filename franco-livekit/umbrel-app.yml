@@ -2,26 +2,14 @@ id: franco-livekit
 name: LiveKit Server
 version: "1.8.0"
 manifestVersion: 1
-description: Servidor SFU de alta performance para chamadas de vídeo e áudio em tempo real com WebRTC.
+description: Servidor SFU de alta performance com Painel Web Administrativo incluso.
 developer: LiveKit
 website: https://livekit.io
-router: livekit
-port: 7880
+router: franco-livekit
+port: 8000
 submitter: Franco
 submissionDate: 2026-10-19
 icon: https://githubusercontent.com
 gallery:
   - https://githubusercontent.com
 category: Utilities
-# Cria os campos de texto seguros na interface do Umbrel:
-inputs:
-  - id: livekit_api_key
-    name: API Key para o TeamSpeak 6
-    type: text
-    required: true
-    default: "francoTS6Server"
-  - id: livekit_secret_key
-    name: Secret Key (Mínimo 32 caracteres)
-    type: password
-    required: true
-    default: "MudeEssaSenhaParaUmaComMaisDe32Letras"

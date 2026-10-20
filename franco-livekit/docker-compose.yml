@@ -1,50 +1,27 @@
-version: "3.7"
-
-services:
-  livekit:
-    image: livekit/livekit-server:v1.8.0
-    restart: always
-    ports:
-      - "${APP_LIVEKIT_PORT}:7880"
-      - "7881:7881/tcp"
-      - "7882:7882/udp"
-    volumes:
-      - ${APP_DATA_DIR}/data:/app
-    entrypoint:
-      - "sh"
-      - "-c"
-      - |
-        # Remove resíduos antigos que causavam o erro de parse
-        if [ -f /app/livekit.yaml ]; then
-          rm -f /app/livekit.yaml
-        fi
-
-        # Definição manual de chaves alfanuméricas estáticas de alta segurança (Substitui o gerador que quebrava)
-        API_KEY="TS6LiveKitServer"
-        SECRET_KEY="A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6"
-
-        # Escreve a configuração no formato JSON perfeito
-        cat <<EOF > /app/livekit.json
-        {
-          "port": 7880,
-          "bind_addresses": [""],
-          "keys": {
-            "${API_KEY}": "${SECRET_KEY}"
-          },
-          "rtc": {
-            "tcp_port": 7881,
-            "udp_port": 7882,
-            "use_external_ip": true
-          }
-        }
-        EOF
-
-        echo "=================================================="
-        echo "          CHAVES DE CONEXÃO DO LIVEKIT            "
-        echo "=================================================="
-        echo " API KEY (TEAMSPEAK 6): $API_KEY"
-        echo " SECRET KEY (TEAMSPEAK 6): $SECRET_KEY"
-        echo "=================================================="
-
-        # Executa o servidor LiveKit
-        exec /livekit-server --config /app/livekit.json
+id: franco-livekit
+name: LiveKit Server
+version: "1.8.0"
+manifestVersion: 1
+description: Servidor SFU de alta performance para chamadas de vídeo e áudio em tempo real com WebRTC.
+developer: LiveKit
+website: https://livekit.io
+router: livekit
+port: 7880
+submitter: Franco
+submissionDate: 2026-10-19
+icon: https://githubusercontent.com
+gallery:
+  - https://githubusercontent.com
+category: Utilities
+# Cria os campos de texto seguros na interface do Umbrel:
+inputs:
+  - id: livekit_api_key
+    name: API Key para o TeamSpeak 6
+    type: text
+    required: true
+    default: "francoTS6Server"
+  - id: livekit_secret_key
+    name: Secret Key (Mínimo 32 caracteres)
+    type: password
+    required: true
+    default: "MudeEssaSenhaParaUmaComMaisDe32Letras"

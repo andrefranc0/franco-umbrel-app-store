@@ -10,15 +10,29 @@ services:
     image: python:3.11-slim
     restart: on-failure
     working_dir: /app
-    command: >
-      sh -c "pip install --no-cache-dir -r /app/requirements.txt &&
-             uvicorn main:APP --host 0.0.0.0 --port 8090"
+    command:
+      - sh
+      - -c
+      - |
+        pip install --no-cache-dir -r /app/requirements.txt
+        cd /app
+        L=$$(head -1 main.local.py | grep -o 'v[0-9][0-9.]*' | head -1)
+        cp main.local.py main.py
+        if [ -f data/update/main.py ] && python -m py_compile data/update/main.py; then
+          U=$$(head -1 data/update/main.py | grep -o 'v[0-9][0-9.]*' | head -1)
+          if [ "$$(printf '%s\n%s\n' "$${L#v}" "$${U#v}" | sort -V | tail -1)" = "$${U#v}" ]; then
+            cp data/update/main.py main.py
+            echo "Usando código atualizado $$U (loja: $$L)"
+          fi
+        fi
+        exec uvicorn main:APP --host 0.0.0.0 --port 8090
     environment:
       PYTHONUNBUFFERED: "1"
       DATA_DIR: /app/data
       DOWNLOAD_DIR: /downloads
+      FRANCORR_SELF_UPDATE: "1"
     volumes:
-      - ${APP_DATA_DIR}/main.py:/app/main.py:ro
+      - ${APP_DATA_DIR}/main.py:/app/main.local.py:ro
       - ${APP_DATA_DIR}/requirements.txt:/app/requirements.txt:ro
       - ${APP_DATA_DIR}/data:/app/data
       - ${UMBREL_ROOT}/data/storage/downloads:/downloads

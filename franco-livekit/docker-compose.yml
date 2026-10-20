@@ -14,35 +14,43 @@ services:
       - "sh"
       - "-c"
       - |
-        # 1. Se o arquivo keys.txt não existir, gera novas chaves e a config
-        if [ ! -f /app/keys.txt ]; then
-          echo "Gerando novas credenciais do LiveKit..."
-          /livekit-server generate-keys > /app/keys.txt
-          
-          API_KEY=$(head -n 1 /app/keys.txt | awk '{print $2}')
-          SECRET_KEY=$(tail -n 1 /app/keys.txt | awk '{print $2}')
-          
-          # Criamos a configuração em uma única linha estruturada para evitar erros de espaços
-          echo "port: 7880" > /app/livekit.yaml
-          echo "bind_addresses: ['']" >> /app/livekit.yaml
-          echo "keys:" >> /app/livekit.yaml
-          echo "  ${API_KEY}: '${SECRET_KEY}'" >> /app/livekit.yaml
-          echo "rtc:" >> /app/livekit.yaml
-          echo "  tcp_port: 7881" >> /app/livekit.yaml
-          echo "  udp_port: 7882" >> /app/livekit.yaml
-          echo "  use_external_ip: true" >> /app/livekit.yaml
+        # Força a remoção do yaml antigo corrompido para não quebrar mais a inicialização
+        if [ -f /app/livekit.yaml ]; then
+          rm -f /app/livekit.yaml
         fi
 
-        # 2. Lê as chaves diretamente do arquivo de texto bruto (infalível)
-        API_KEY_ATUAL=$(head -n 1 /app/keys.txt | awk '{print $2}')
-        SECRET_KEY_ATUAL=$(tail -n 1 /app/keys.txt | awk '{print $2}')
+        # Se o keys.txt não existir, gera as novas credenciais
+        if [ ! -f /app/keys.txt ]; then
+          echo "Gerando chaves oficiais do LiveKit..."
+          /livekit-server generate-keys > /app/keys.txt
+        fi
+
+        # Extrai as chaves geradas
+        API_KEY=$(head -n 1 /app/keys.txt | awk '{print $2}')
+        SECRET_KEY=$(tail -n 1 /app/keys.txt | awk '{print $2}')
+
+        # Escreve a configuração no formato JSON (Elimina qualquer erro de espaço ou indentação do YAML)
+        cat <<EOF > /app/livekit.json
+        {
+          "port": 7880,
+          "bind_addresses": [""],
+          "keys": {
+            "${API_KEY}": "${SECRET_KEY}"
+          },
+          "rtc": {
+            "tcp_port": 7881,
+            "udp_port": 7882,
+            "use_external_ip": true
+          }
+        }
+        EOF
 
         echo "=================================================="
         echo "          CHAVES DE CONEXÃO DO LIVEKIT            "
         echo "=================================================="
-        echo " API KEY (TEAMSPEAK 6): $API_KEY_ATUAL"
-        echo " SECRET KEY (TEAMSPEAK 6): $SECRET_KEY_ATUAL"
+        echo " API KEY (TEAMSPEAK 6): $API_KEY"
+        echo " SECRET KEY (TEAMSPEAK 6): $SECRET_KEY"
         echo "=================================================="
 
-        # 3. Executa o servidor
-        exec /livekit-server --config /app/livekit.yaml
+        # Executa o servidor apontando para o arquivo JSON estruturado
+        exec /livekit-server --config /app/livekit.json

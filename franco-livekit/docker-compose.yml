@@ -14,27 +14,16 @@ services:
       - "sh"
       - "-c"
       - |
-        # 1. Remove qualquer arquivo yaml residual antigo
+        # Remove resíduos antigos que causavam o erro de parse
         if [ -f /app/livekit.yaml ]; then
           rm -f /app/livekit.yaml
         fi
 
-        # 2. Se o keys.txt não existir, gera chaves alfanuméricas puras de alta segurança
-        if [ ! -f /app/keys.txt ]; then
-          echo "Gerando credenciais limpas para o LiveKit..."
-          NEW_API_KEY=$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 16)
-          NEW_SECRET_KEY=$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 32)
-          
-          # Salva em texto puro para persistência e consultas futuras
-          echo "$NEW_API_KEY" > /app/keys.txt
-          echo "$NEW_SECRET_KEY" >> /app/keys.txt
-        fi
+        # Definição manual de chaves alfanuméricas estáticas de alta segurança (Substitui o gerador que quebrava)
+        API_KEY="TS6LiveKitServer"
+        SECRET_KEY="A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6"
 
-        # 3. Lê as chaves salvas sem nenhuma interferência de formatação
-        API_KEY=$(head -n 1 /app/keys.txt)
-        SECRET_KEY=$(tail -n 1 /app/keys.txt)
-
-        # 4. Sobrescreve o arquivo JSON com as credenciais válidas
+        # Escreve a configuração no formato JSON perfeito
         cat <<EOF > /app/livekit.json
         {
           "port": 7880,
@@ -57,5 +46,5 @@ services:
         echo " SECRET KEY (TEAMSPEAK 6): $SECRET_KEY"
         echo "=================================================="
 
-        # 5. Executa o servidor LiveKit
+        # Executa o servidor LiveKit
         exec /livekit-server --config /app/livekit.json

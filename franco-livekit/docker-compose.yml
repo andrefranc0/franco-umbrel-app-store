@@ -1,16 +1,47 @@
 version: "3.7"
 
 services:
+  # Servidor SFU Principal do LiveKit
   livekit:
     image: livekit/livekit-server:v1.8.0
     restart: always
-    command: --bind 0.0.0.0 --rtc-port-tcp 7881 --rtc-port-udp 7882 --use-external-ip
+    command: --bind 0.0.0.0 --udp-port 7882 --config /app/livekit.json
     ports:
       - "${APP_LIVEKIT_PORT}:7880"
       - "7881:7881/tcp"
       - "7882:7882/udp"
     volumes:
       - ${APP_DATA_DIR}/data:/app
+    entrypoint:
+      - "sh"
+      - "-c"
+      - |
+        # Cria um arquivo de configuração padrão seguro se ele não existir
+        if [ ! -f /app/livekit.json ]; then
+          cat <<EOF > /app/livekit.json
+        {
+          "port": 7880,
+          "bind_addresses": [""],
+          "keys": {
+            "francoTS6Server": "mude_esse_secret_no_seu_painel_ts6_ou_aqui_com_mais_de_32_letras"
+          },
+          "rtc": {
+            "tcp_port": 7881,
+            "udp_port": 7882,
+            "use_external_ip": true
+          }
+        }
+        EOF
+        fi
+        exec /livekit-server --config /app/livekit.json
+
+  # Painel Web Visual para gerenciar o LiveKit (Interface Gráfica)
+  livekit-admin:
+    image: livekit/livekit-cli:latest
+    restart: always
+    ports:
+      - "7885:8080" # Acesse o painel pelo IP-DO-UMBREL:7885
     environment:
-      # Pega de forma segura o que foi digitado na tela do seu Umbrel
-      - LIVEKIT_KEYS=${INPUT_LIVEKIT_API_KEY}:${INPUT_LIVEKIT_SECRET_KEY}
+      # O painel vai se conectar automaticamente no seu servidor local
+      - LIVEKIT_URL=http://livekit:7880
+    command: dashboard

@@ -1,4 +1,4 @@
-# Francorr v1.0.10 - se este código estiver no seu repositório, o arquivo tem "def guard" e "def login"
+# Francorr v1.0.11 - se este código estiver no seu repositório, o arquivo tem "def self_update"
 import asyncio
 import hashlib
 import hmac
@@ -10,6 +10,7 @@ import secrets
 import shutil
 import sqlite3
 import time
+import urllib.request
 from contextlib import asynccontextmanager
 from http.cookies import SimpleCookie
 from datetime import datetime, timezone
@@ -24,7 +25,7 @@ DATA_DIR = os.getenv("DATA_DIR", "/app/data")
 DB_PATH = os.path.join(DATA_DIR, "database.db")
 CONFIG_PATH = os.path.join(DATA_DIR, "config.json")
 SELF_URL = os.getenv("SELF_URL", "http://franco-francorr_web_1:8090")
-BUILD = "1.0.10"  # mesma versão do umbrel-app.yml; aparece no log e na página para conferir o que está rodando
+BUILD = "1.0.11"  # mesma versão do umbrel-app.yml; aparece no log e na página para conferir o que está rodando
 
 # Pastas de download (a pasta /downloads do Umbrel é a mesma que o Sonarr enxerga)
 DOWNLOAD_ROOT = os.getenv("DOWNLOAD_DIR", "/downloads")
@@ -577,6 +578,61 @@ def guard(request):
     return JSONResponse(status_code=401, content={"error": "não autenticado"})
 
 
+# ---------------------------------------------------------------- atualização do código
+# O botão "Buscar atualização" baixa o main.py do GitHub, confere que é Python válido e mais novo que o atual,
+# guarda em DATA_DIR/update/main.py e reinicia o app. O docker-compose usa essa cópia ao iniciar
+# (FRANCORR_SELF_UPDATE=1 indica que o compose já foi ajustado para isso).
+UPDATE_URL = os.getenv(
+    "UPDATE_URL",
+    "https://raw.githubusercontent.com/andrefranc0/franco-umbrel-app-store/master/franco-francorr/main.py",
+)
+UPDATE_DIR = os.path.join(DATA_DIR, "update")
+UPDATE_FILE = os.path.join(UPDATE_DIR, "main.py")
+SELF_UPDATE_READY = os.getenv("FRANCORR_SELF_UPDATE") == "1"
+
+
+def vtuple(v):
+    return tuple(int(n) for n in re.findall(r"\d+", v or "0"))
+
+
+def fetch_remote_code():
+    req = urllib.request.Request(UPDATE_URL, headers={"User-Agent": "francorr-updater", "Cache-Control": "no-cache"})
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        return resp.read().decode("utf-8")
+
+
+def self_update():
+    """Devolve (mensagem, reiniciar?)."""
+    try:
+        code = fetch_remote_code()
+    except Exception as e:  # noqa: BLE001
+        return f"não consegui baixar do GitHub: {e}", False
+    m = re.search(r'^BUILD = "([\d.]+)"', code, re.M)
+    if not m or "APP = FastAPI" not in code:
+        return "o arquivo baixado não parece ser o main.py do Francorr (nada foi alterado)", False
+    try:
+        compile(code, "main.py", "exec")
+    except SyntaxError as e:
+        return f"o arquivo baixado tem erro de sintaxe ({e}); nada foi alterado", False
+    remote = m.group(1)
+    if vtuple(remote) <= vtuple(BUILD):
+        return f"você já está na versão mais nova (v{BUILD})", False
+    os.makedirs(UPDATE_DIR, exist_ok=True)
+    tmp = UPDATE_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(code)
+    os.replace(tmp, UPDATE_FILE)
+    if not SELF_UPDATE_READY:
+        return (f"v{remote} baixada, mas o docker-compose ainda não está ajustado para usá-la "
+                "(veja as instruções); nada vai mudar ao reiniciar"), False
+    return f"v{remote} baixada. Reiniciando o app...", True
+
+
+def schedule_restart():
+    # sai com erro; o compose tem restart: on-failure e sobe o container de novo já com o código novo
+    asyncio.get_running_loop().call_later(1.5, os._exit, 1)
+
+
 # ---------------------------------------------------------------- downloader
 # Como o Sonarr recebe os downloads (cliente "Torrent Blackhole"):
 #  1. o indexador entrega um .torrent válido, mas falso, com o link do Drive no campo "comment";
@@ -995,6 +1051,11 @@ Watch Folder: <code>/downloads/francorr/complete</code></div>
 <button onclick="logout()" style="background:#555">Sair</button>
 <span id="amsg" style="color:#8c8"></span></div>
 
+<h3>Atualização do código</h3>
+<div class="box">Versão atual: <b>v__BUILD__</b> __UPDATE_NOTE__<br>
+<button onclick="updateCode()">Buscar atualização no GitHub</button>
+<span id="umsg"></span></div>
+
 <h3>Downloads</h3>
 <div class="box">__JOBS__</div>
 <p style="color:#777;font-size:12px">Código v__BUILD__</p>
@@ -1026,6 +1087,12 @@ async function saveAccount(){
     body:JSON.stringify({user:document.getElementById('au').value,current:document.getElementById('ac').value,new_password:document.getElementById('an').value})});
   const j = await r.json();
   if(r.ok){location.reload()}else{document.getElementById('amsg').style.color='#e66';document.getElementById('amsg').textContent=' '+(j.error||'erro')}
+}
+async function updateCode(){
+  const m = document.getElementById('umsg'); m.textContent = ' buscando...';
+  const j = await post('update');
+  m.textContent = ' ' + (j.message || j.error);
+  if(j.restarting){ setTimeout(function w(){ fetch('./').then(r=>r.ok?location.reload():setTimeout(w,3000)).catch(()=>setTimeout(w,3000)); }, 15000); }
 }
 async function logout(){ await post('logout'); location.reload(); }
 async function review(id, action){
@@ -1121,13 +1188,14 @@ def home(request: Request):
         "__MSG_COUNT__": str(n_msgs),
         "__QTAG__": html.escape(cfg.get("quality_tag", ""), quote=True),
         "__AUTH_USER__": html.escape(auth["user"], quote=True),
+        "__UPDATE_NOTE__": "" if SELF_UPDATE_READY else '<span style="color:#e6b95b">(docker-compose ainda sem o ajuste de auto-atualização)</span>',
         "__AUTH_WARN__": (
             '<p style="color:#e6b95b">Você está usando o acesso padrão (admin / admin). Troque abaixo.</p>'
             if auth.get("default") else ""
         ),
     }
     # substituição em uma passada só, para o conteúdo inserido nunca ser reinterpretado
-    return re.sub(r"__(?:STATUS|COUNT|CHANNEL|TOKEN_HINT|SELF_URL|JOBS|BUILD|REVIEW_COUNT|IGNORED_COUNT|MSG_COUNT|REVIEW|QTAG|AUTH_USER|AUTH_WARN)__", lambda m: values[m.group(0)], PAGE)
+    return re.sub(r"__(?:STATUS|COUNT|CHANNEL|TOKEN_HINT|SELF_URL|JOBS|BUILD|REVIEW_COUNT|IGNORED_COUNT|MSG_COUNT|REVIEW|QTAG|AUTH_USER|AUTH_WARN|UPDATE_NOTE)__", lambda m: values[m.group(0)], PAGE)
 
 
 @APP.post("/config")
@@ -1193,6 +1261,16 @@ async def update_account(request: Request):
     save_auth(auth)
     # a assinatura da sessão depende do hash/usuário: renova o cookie para você continuar logado
     return JSONResponse(content={"ok": True}, headers={"Set-Cookie": cookie_header(make_session())})
+
+
+@APP.post("/update")
+async def update_code(request: Request):
+    if (denied := guard(request)):
+        return denied
+    message, restart = await asyncio.to_thread(self_update)
+    if restart:
+        schedule_restart()
+    return {"message": message, "restarting": restart}
 
 
 @APP.post("/settings")

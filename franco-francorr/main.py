@@ -1,4 +1,4 @@
-# Francorr v1.0.8 - se este código estiver no seu repositório, o arquivo tem "def read_torrent" e "def call_gdown"
+# Francorr v1.0.9 - se este código estiver no seu repositório, o arquivo tem "def extract_releases" e "def reprocess_all"
 import asyncio
 import hashlib
 import html
@@ -11,7 +11,7 @@ import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from email.utils import format_datetime
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 import discord
 from fastapi import FastAPI, Query, Request
@@ -21,7 +21,7 @@ DATA_DIR = os.getenv("DATA_DIR", "/app/data")
 DB_PATH = os.path.join(DATA_DIR, "database.db")
 CONFIG_PATH = os.path.join(DATA_DIR, "config.json")
 SELF_URL = os.getenv("SELF_URL", "http://franco-francorr_web_1:8090")
-BUILD = "1.0.8"  # mesma versão do umbrel-app.yml; aparece no log e na página para conferir o que está rodando
+BUILD = "1.0.9"  # mesma versão do umbrel-app.yml; aparece no log e na página para conferir o que está rodando
 
 # Pastas de download (a pasta /downloads do Umbrel é a mesma que o Sonarr enxerga)
 DOWNLOAD_ROOT = os.getenv("DOWNLOAD_DIR", "/downloads")
@@ -34,77 +34,31 @@ SONARR_GID = int(os.getenv("SONARR_GID", "1000"))
 
 os.makedirs(DATA_DIR, exist_ok=True)
 
-# ---------------------------------------------------------------- parser
-# Formato esperado (um post pode ter vários episódios/links):
-#   Anime: **Nome - S02** (**Nome em inglês - S02**)
-#   **Nome - S02E02 - Título do episódio [GRUPO] [pt-br]**
-#   Download via [google-drive](https://drive.google.com/...)
-MD_LINK_RE = re.compile(r"\[([^\]]*)\]\(\s*<?(https?://[^)\s>]+)>?\s*\)")
-URL_RE = re.compile(r"https?://[^\s<>()\[\]]+")
-EP_RE = re.compile(r"\bS\d{1,2}\s?E\d{1,4}\b", re.I)
+# ---------------------------------------------------------------- links
+DRIVE_HOSTS = ("drive.google.com", "docs.google.com", "drive.usercontent.google.com")
 
 
-def clean_line(line):
-    """Tira links e marcações do Discord, devolvendo só o texto legível."""
-    line = MD_LINK_RE.sub(" ", line)
-    line = URL_RE.sub(" ", line)
-    line = re.sub(r"\*+|`|~~|\|\||__", "", line)
-    line = re.sub(r"^\s*(#{1,6}\s|>\s|[-•]{1,2}\s)", "", line)
-    return re.sub(r"\s+", " ", line).strip(" -–—:")
+def drive_file_id(url):
+    m = re.search(r"/d/([A-Za-z0-9_-]{10,})", url) or re.search(r"[?&]id=([A-Za-z0-9_-]{10,})", url)
+    return m.group(1) if m else None
 
 
-def message_text(message):
-    parts = [message.content or ""]
-    for e in message.embeds:
-        parts += [e.title or "", e.description or ""]
-        parts += [f"{f.name}\n{f.value}" for f in e.fields]
-    for snap in getattr(message, "message_snapshots", None) or []:  # mensagens encaminhadas
-        parts.append(getattr(snap, "content", "") or "")
-    return "\n".join(p for p in parts if p)
+def link_key(url):
+    """Identifica o mesmo arquivo mesmo com variações do link (?usp=sharing, ?usp=drive_link...)."""
+    fid = drive_file_id(url)
+    if fid:
+        return "drive:" + fid
+    m = re.search(r"/folders/([A-Za-z0-9_-]{10,})", url)
+    if m:
+        return "folder:" + m.group(1)
+    return url.split("#", 1)[0]
 
 
-def extract_releases(text):
-    """Devolve [(titulo, url, texto_de_busca)] para cada link encontrado."""
-    lines = text.splitlines()
-    cleaned = [clean_line(l) for l in lines]
-    search_text = " ".join(c for c in cleaned if c)
-    fallback = next((c for c in cleaned if re.search(r"[A-Za-zÀ-ÿ0-9]{3,}", c)), "Untitled Release")[:200]
-
-    releases, last_title = [], None
-    for line, plain in zip(lines, cleaned):
-        found = []  # (url, titulo_do_proprio_link)
-        for m in MD_LINK_RE.finditer(line):
-            anchor = clean_line(m.group(1))
-            found.append((m.group(2), anchor if EP_RE.search(anchor) else None))
-        found += [(u, None) for u in URL_RE.findall(MD_LINK_RE.sub(" ", line))]
-
-        if not found:
-            if plain and EP_RE.search(plain):
-                last_title = plain
-            continue
-        for url, own_title in found:
-            title = own_title or last_title or (plain if EP_RE.search(plain) else None) or fallback
-            releases.append((title, url.rstrip(".,;"), search_text))
-    return releases
-
-
-def index_message(message, self_id):
-    """Indexa os links de uma mensagem; ignora o próprio bot e links já vistos."""
-    if message.author.id == self_id:
-        return 0
-    added = 0
-    created = message.created_at.strftime("%Y-%m-%d %H:%M:%S")
-    with db() as conn:
-        for title, url, extra in extract_releases(message_text(message)):
-            if conn.execute("SELECT 1 FROM links WHERE url = ?", (url,)).fetchone():
-                continue
-            conn.execute(
-                "INSERT INTO links (title, url, extra, created_at) VALUES (?, ?, ?, ?)",
-                (title, url, extra, created),
-            )
-            added += 1
-            print(f"Novo link indexado: {title} -> {url}", flush=True)
-    return added
+def host_of(url):
+    try:
+        return (urlparse(url).hostname or "").lower()
+    except ValueError:
+        return ""
 
 
 # ---------------------------------------------------------------- banco
@@ -124,9 +78,31 @@ def init_db():
             )
             """
         )
-        cols = [r[1] for r in conn.execute("PRAGMA table_info(links)")]
-        if "extra" not in cols:  # texto completo do post, usado na busca (nome em inglês etc.)
-            conn.execute("ALTER TABLE links ADD COLUMN extra TEXT")
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(links)")}
+        for name, ddl in (
+            ("extra", "TEXT"),  # texto do post, usado na busca (nome em inglês etc.)
+            ("status", "TEXT DEFAULT 'ok'"),  # ok = visível ao Sonarr | review = aguardando revisão | ignored
+            ("reason", "TEXT"),  # por que foi para revisão
+            ("message_id", "TEXT"),  # mensagem do Discord de onde veio
+            ("ukey", "TEXT"),  # chave do link (id do arquivo no Drive)
+            ("edited", "INTEGER DEFAULT 0"),  # 1 = você mexeu à mão; o app não sobrescreve mais
+        ):
+            if name not in cols:
+                conn.execute(f"ALTER TABLE links ADD COLUMN {name} {ddl}")
+        conn.execute("UPDATE links SET status = 'ok' WHERE status IS NULL")
+        conn.execute("UPDATE links SET edited = 0 WHERE edited IS NULL")
+        for lid, url in conn.execute("SELECT id, url FROM links WHERE ukey IS NULL").fetchall():
+            conn.execute("UPDATE links SET ukey = ? WHERE id = ?", (link_key(url or ""), lid))
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS messages (
+                message_id TEXT PRIMARY KEY,
+                text TEXT,
+                created_at TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS jobs (
@@ -143,6 +119,359 @@ def init_db():
 
 
 init_db()
+
+
+# ---------------------------------------------------------------- parser
+# Entende posts em vários formatos. Exemplos que reconhece (um post pode ter vários episódios/links):
+#   Anime: **Nome - S02**            -> cabeçalho com nome e temporada
+#   **Nome - S02E02 - Título [GRUPO]** | Nome 2x05 | Nome - Temporada 2 Episódio 5 | Episódio 05 | EP05
+#   Download via [google-drive](https://drive.google.com/...)
+MD_LINK_RE = re.compile(r"\[([^\]]*)\]\(\s*<?(https?://[^)\s>]+)>?\s*\)")
+URL_RE = re.compile(r"https?://[^\s<>()\[\]]+")
+EMOJI_RE = re.compile(r"<a?:\w+:\d+>")
+MENTION_RE = re.compile(r"<(?:@[!&]?|#)\d+>")
+LABEL_RE = re.compile(r"^(?:anime|s[eé]rie|series|show|dorama|filme|t[ií]tulo|title|nome|name)\s*[:：]\s*(.+)$", re.I)
+PACK_RE = re.compile(r"\b(?:completa|completo|complete|batch|pack|temporada inteira|todos os epis[oó]dios)\b", re.I)
+
+SE_RE = re.compile(r"\bS(\d{1,2})[\s._-]?E(\d{1,4})((?:[\s._-]?-?[\s._-]?E\d{1,4})*)(?!\d)", re.I)
+WORD_EP = r"(?:epis[oó]dio|episode|ep|cap[ií]tulo|cap)\.?"
+WORDS_RE = re.compile(
+    r"\b(?:temporada|temp\.?|season)\s*[:#]?\s*(\d{1,2})\b[\s,;:.\-–|·]*" + WORD_EP + r"\s*#?\s*(\d{1,4})\b", re.I
+)
+ORD_RE = re.compile(
+    r"\b(\d{1,2})\s*[ªº°]?\s*(?:temporada|season)\b[\s,;:.\-–|·]*" + WORD_EP + r"\s*#?\s*(\d{1,4})\b", re.I
+)
+NXM_RE = re.compile(r"\b(\d{1,2})x(\d{1,3})\b", re.I)
+EPONLY_RE = re.compile(r"\b" + WORD_EP + r"\s*#?\s*(\d{1,4})\b|\bE(\d{1,3})\b", re.I)
+WEAK_RE = re.compile(r"(?:^|\s)[-–—]\s*(\d{1,3})(?:v\d)?(?=\s|\[|\(|$)")
+
+RES_RE = re.compile(r"\b(?:(2160|1440|1080|720|576|480)[pi]|(4k|uhd|fhd))\b", re.I)
+SRC_RE = re.compile(r"\b(web[-. ]?dl|webrip|blu[-. ]?ray|bdrip|brrip|hdtv|dvdrip|hdrip|remux)\b", re.I)
+SRC_NAMES = {
+    "webdl": "WEB-DL", "webrip": "WEBRip", "bluray": "BluRay", "bdrip": "BDRip",
+    "brrip": "BRRip", "hdtv": "HDTV", "dvdrip": "DVDRip", "hdrip": "HDRip", "remux": "Remux",
+}
+
+
+def clean_text(line):
+    """Tira links, menções e marcações do Discord, devolvendo só o texto legível."""
+    line = MD_LINK_RE.sub(" ", line or "")
+    line = EMOJI_RE.sub(" ", line)
+    line = MENTION_RE.sub(" ", line)
+    line = URL_RE.sub(" ", line)
+    line = re.sub(r"\*+|`+|~~|\|\||__", "", line)
+    line = re.sub(r"^\s*(?:#{1,6}\s+|>\s*|[-•·▪►▶→]+\s+)", "", line)
+    return re.sub(r"\s+", " ", line).strip(" -–—:|·")
+
+
+def is_decorative(plain):
+    """Linhas de enfeite: separadores, só emoji, ou letras espaçadas (E P I S O D I O)."""
+    if not re.search(r"[A-Za-zÀ-ÿ0-9]", plain):
+        return True
+    toks = plain.split()
+    return len(toks) >= 6 and sum(len(t) == 1 for t in toks) / len(toks) >= 0.7
+
+
+def has_letters(text):
+    return len(re.findall(r"[A-Za-zÀ-ÿ]", text or "")) >= 2
+
+
+def season_from(text):
+    """Acha 'S2', 'Temporada 2', '2ª Temporada', 'Season 2'. Devolve (temporada, texto sem a marcação)."""
+    pats = (
+        r"\bS(\d{1,2})\b(?![\s._-]?E\d)",
+        r"\b(?:temporada|temp\.?|season)\s*[:#]?\s*(\d{1,2})\b",
+        r"\b(\d{1,2})\s*[ªº°]?\s*(?:temporada|season)\b",
+        r"\b(\d{1,2})(?:st|nd|rd|th)\s+season\b",
+    )
+    for p in pats:
+        m = re.search(p, text or "", re.I)
+        if m:
+            rest = re.sub(r"\s+", " ", text[: m.start()] + " " + text[m.end():])
+            return int(m.group(1)), rest.strip(" -–—:|·()[]")
+    return None, text or ""
+
+
+def parse_episode(text):
+    """Procura o episódio num texto. Devolve dict ou None."""
+    if not text:
+        return None
+
+    def mk(m, season, ep, explicit, more=(), weak=False, end=None):
+        return {"season": season, "ep": ep, "more": list(more), "start": m.start(),
+                "end": m.end() if end is None else end, "explicit": explicit, "weak": weak}
+
+    m = SE_RE.search(text)
+    if m:
+        more = [int(n) for n in re.findall(r"E(\d{1,4})", m.group(3), re.I)]
+        return mk(m, int(m.group(1)), int(m.group(2)), True, more)
+    for rx in (WORDS_RE, ORD_RE, NXM_RE):
+        m = rx.search(text)
+        if m:
+            return mk(m, int(m.group(1)), int(m.group(2)), True)
+    m = EPONLY_RE.search(text)
+    if m:
+        return mk(m, None, int(m.group(1) or m.group(2)), False)
+    m = WEAK_RE.search(text)
+    if m:
+        return mk(m, None, int(m.group(1)), False, weak=True)
+    return None
+
+
+def marker_str(season, ep, more=()):
+    s = f"S{season:02d}E{ep:02d}"
+    for n in more:
+        s += f"-E{n:02d}"
+    return s
+
+
+def clean_name(text):
+    text = re.sub(r"^[^\w\[(]+", "", text or "")  # emojis/símbolos no começo
+    text = re.sub(r"^(?:download|baixar|assistir|link|dl)\s*[:\-–]\s*", "", text, flags=re.I)
+    text = re.sub(r"\s+", " ", PACK_RE.sub(" ", text))  # "completa", "batch"... não fazem parte do nome
+    return text.strip(" -–—:|·")
+
+
+def build_title(plain, ep, series_hdr, season_hdr):
+    """Monta 'Série - SxxEyy - resto' a partir da linha do episódio. Devolve (título, [motivos de revisão])."""
+    name = clean_name(plain[: ep["start"]])
+    sn, name = season_from(name) if name else (None, "")
+    if not has_letters(name):
+        name = ""
+    rest = plain[ep["end"]:].strip(" -–—:|·")
+    reasons = []
+    series = name or series_hdr or ""
+    if not series:
+        reasons.append("nome da série não encontrado")
+    season = ep["season"] if ep["season"] is not None else (sn if sn is not None else season_hdr)
+    if ep["weak"]:
+        reasons.append("só o número do episódio foi encontrado (confirme)")
+    if season is None:
+        season = 1
+        reasons.append("temporada não encontrada (usei S01)")
+    title = " - ".join(p for p in (series, marker_str(season, ep["ep"], ep["more"]), rest) if p)
+    return title, reasons
+
+
+def find_quality(text):
+    res = src = None
+    m = RES_RE.search(text or "")
+    if m:
+        res = (m.group(1) + "p") if m.group(1) else {"4k": "2160p", "uhd": "2160p", "fhd": "1080p"}[m.group(2).lower()]
+    m = SRC_RE.search(text or "")
+    if m:
+        src = SRC_NAMES[re.sub(r"[-. ]", "", m.group(1).lower())]
+    return res, src
+
+
+def apply_quality(title, text, tag):
+    """Garante resolução/fonte no título: usa o que o post diz; se não diz nada, usa a etiqueta padrão."""
+    t_res, t_src = find_quality(title)
+    m_res, m_src = find_quality(text)
+    add = []
+    if not t_res and m_res:
+        add.append(m_res)
+    if not t_src and m_src:
+        add.append(m_src)
+    if not add and not (t_res or t_src) and tag:
+        add.append(tag)
+    return (title + " " + " ".join(add)).strip() if add else title
+
+
+def fallback_title(rows):
+    for r in rows:
+        if not r["deco"] and len(re.findall(r"[A-Za-zÀ-ÿ0-9]", r["plain"])) >= 6:
+            return r["plain"][:200]
+    return "Untitled Release"
+
+
+def message_text(message):
+    parts = [message.content or ""]
+    for e in message.embeds:
+        parts += [e.title or "", e.description or ""]
+        parts += [f"{f.name}\n{f.value}" for f in e.fields]
+    for snap in getattr(message, "message_snapshots", None) or []:  # mensagens encaminhadas
+        parts.append(getattr(snap, "content", "") or "")
+    return "\n".join(p for p in parts if p)
+
+
+def extract_releases(text, quality_tag=""):
+    """Devolve uma lista de dicts {title, url, extra, status, reason}, um por link encontrado.
+    status: 'ok' (entendi), 'review' (precisa de revisão) ou 'ignored' (link de serviço não suportado)."""
+    rows = []
+    for raw in (text or "").splitlines():
+        links = [(m.group(2), clean_text(m.group(1))) for m in MD_LINK_RE.finditer(raw)]
+        links += [(u, "") for u in URL_RE.findall(MD_LINK_RE.sub(" ", raw))]
+        plain = clean_text(raw)
+        rows.append({"plain": plain, "links": links, "deco": is_decorative(plain)})
+    if not any(r["links"] for r in rows):
+        return []
+
+    anchors = [a for r in rows for _u, a in r["links"] if a and parse_episode(a)]
+    search_text = " ".join([r["plain"] for r in rows if not r["deco"]] + anchors)[:1500]
+    eps = [parse_episode(r["plain"]) for r in rows]
+
+    # cabeçalho: nome da série e temporada (linha "Anime: ...", ou linha só com a temporada)
+    series_hdr = season_hdr = None
+    for r, e in zip(rows, eps):
+        if r["deco"] or e:
+            continue
+        m = LABEL_RE.match(r["plain"])
+        if m:
+            val = re.split(r"\s*[\(\[]", m.group(1), 1)[0]
+            s, val = season_from(val)
+            val = clean_name(val)
+            if has_letters(val):
+                series_hdr, season_hdr = val, s
+                break
+    if series_hdr is None:
+        for r, e in zip(rows, eps):
+            if r["deco"] or e or r["links"]:
+                continue
+            s, rem = season_from(r["plain"])
+            rem = clean_name(rem)
+            if s is not None and has_letters(rem):
+                series_hdr, season_hdr = rem, s
+                break
+    if season_hdr is None:
+        for r, e in zip(rows, eps):
+            if r["deco"] or e or r["links"]:
+                continue
+            s, rem = season_from(r["plain"])
+            if s is not None and not has_letters(rem):
+                season_hdr = s
+                break
+    if series_hdr is None:  # usa o nome que aparece numa linha de episódio
+        for r, e in zip(rows, eps):
+            if e and not e["weak"]:
+                n = clean_name(r["plain"][: e["start"]])
+                _s, n = season_from(n)
+                if has_letters(n):
+                    series_hdr = n
+                    break
+
+    def usable(e, weak_ok):
+        return e is not None and (weak_ok or not e["weak"])
+
+    def pick(i, anchor, weak_ok):
+        a = parse_episode(anchor) if anchor else None
+        if usable(a, weak_ok):
+            return anchor, a
+        if usable(eps[i], weak_ok):
+            return rows[i]["plain"], eps[i]
+        for j in range(i - 1, max(-1, i - 9), -1):  # linhas de cima, a mais próxima primeiro
+            if usable(eps[j], weak_ok):
+                return rows[j]["plain"], eps[j]
+        for j in range(i + 1, min(len(rows), i + 4)):  # título depois do link
+            if usable(eps[j], weak_ok):
+                return rows[j]["plain"], eps[j]
+        cands = [(e["season"], e["ep"]) for e in eps if usable(e, weak_ok)]
+        if len(set(cands)) == 1:  # o post inteiro fala de um único episódio
+            j = next(k for k, e in enumerate(eps) if usable(e, weak_ok))
+            return rows[j]["plain"], eps[j]
+        return None
+
+    pack_ok = bool(series_hdr and season_hdr is not None and PACK_RE.search(search_text))
+    out = []
+    for i, r in enumerate(rows):
+        for url, anchor in r["links"]:
+            url = url.rstrip(".,;")
+            host = host_of(url)
+            rel = {"url": url, "extra": search_text}
+            if host not in DRIVE_HOSTS:
+                rel.update(title=fallback_title(rows), status="ignored",
+                           reason=f"serviço não suportado ({host or 'link inválido'}) - só Google Drive é baixado")
+                out.append(rel)
+                continue
+            reasons = []
+            if pack_ok and "/folders/" in url:  # pasta do Drive + "temporada completa"
+                title = f"{series_hdr} S{season_hdr:02d}"
+            else:
+                found = pick(i, anchor, False) or pick(i, anchor, True)
+                if found:
+                    title, reasons = build_title(found[0], found[1], series_hdr, season_hdr)
+                elif pack_ok:
+                    title = f"{series_hdr} S{season_hdr:02d}"
+                else:
+                    reasons.append("episódio não encontrado no post")
+                    title = (series_hdr + (f" S{season_hdr:02d}" if season_hdr is not None else "")) if series_hdr else fallback_title(rows)
+            rel["title"] = apply_quality(title, search_text, quality_tag)
+            rel["status"] = "review" if reasons else "ok"
+            rel["reason"] = "; ".join(reasons) or None
+            out.append(rel)
+    return out
+
+
+def clean_title(title):
+    title = re.sub(r"[\x00-\x1f]+", " ", str(title or ""))
+    return re.sub(r"\s+", " ", title).strip()[:250]
+
+
+def apply_message(conn, mid, text, created, qtag):
+    """Aplica o parser a uma mensagem: cria/atualiza os links dela. Não mexe no que você corrigiu à mão."""
+    new, keys = 0, []
+    for rel in extract_releases(text, qtag):
+        key = link_key(rel["url"])
+        keys.append(key)
+        row = conn.execute("SELECT id, edited FROM links WHERE ukey = ?", (key,)).fetchone()
+        if row:
+            if row[1]:
+                conn.execute("UPDATE links SET message_id = ? WHERE id = ?", (mid, row[0]))
+            else:
+                conn.execute(
+                    "UPDATE links SET title = ?, url = ?, extra = ?, status = ?, reason = ?, message_id = ? WHERE id = ?",
+                    (rel["title"], rel["url"], rel["extra"], rel["status"], rel["reason"], mid, row[0]),
+                )
+            continue
+        conn.execute(
+            "INSERT INTO links (title, url, extra, status, reason, message_id, ukey, edited, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)",
+            (rel["title"], rel["url"], rel["extra"], rel["status"], rel["reason"], mid, key, created),
+        )
+        new += 1
+        if rel["status"] == "ok":
+            print(f"Novo link indexado: {rel['title']} -> {rel['url']}", flush=True)
+        elif rel["status"] == "review":
+            print(f"Link para revisar ({rel['reason']}): {rel['title']} -> {rel['url']}", flush=True)
+    # links que sumiram da mensagem (editada) e que ninguém corrigiu à mão
+    if keys:
+        marks = ",".join("?" * len(keys))
+        conn.execute(f"DELETE FROM links WHERE message_id = ? AND edited = 0 AND ukey NOT IN ({marks})", (mid, *keys))
+    else:
+        conn.execute("DELETE FROM links WHERE message_id = ? AND edited = 0", (mid,))
+    return new
+
+
+def process_message(mid, text, created):
+    """Guarda o texto original da mensagem e (re)indexa os links dela."""
+    qtag = load_config().get("quality_tag", "")
+    with db() as conn:
+        known = conn.execute("SELECT 1 FROM messages WHERE message_id = ?", (mid,)).fetchone()
+        if not known and not (URL_RE.search(text or "") or MD_LINK_RE.search(text or "")):
+            return 0
+        conn.execute(
+            "INSERT OR REPLACE INTO messages (message_id, text, created_at, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
+            (mid, text, created),
+        )
+        return apply_message(conn, mid, text, created, qtag)
+
+
+def reprocess_all():
+    """Reaplica o parser a todos os textos guardados (depois de melhorar o parser ou trocar a etiqueta)."""
+    qtag = load_config().get("quality_tag", "")
+    with db() as conn:
+        rows = conn.execute("SELECT message_id, text, created_at FROM messages").fetchall()
+        for mid, text, created in rows:
+            apply_message(conn, mid, text, created, qtag)
+    return len(rows)
+
+
+def index_message(message, self_id):
+    """Indexa os links de uma mensagem do Discord; ignora o próprio bot."""
+    if message.author.id == self_id:
+        return 0
+    created = message.created_at.strftime("%Y-%m-%d %H:%M:%S")
+    return process_message(str(message.id), message_text(message), created)
 
 
 # ---------------------------------------------------------------- config
@@ -361,11 +690,6 @@ def next_job():
     return row
 
 
-def drive_file_id(url):
-    m = re.search(r"/d/([A-Za-z0-9_-]{10,})", url) or re.search(r"[?&]id=([A-Za-z0-9_-]{10,})", url)
-    return m.group(1) if m else None
-
-
 def call_gdown(fn, **kwargs):
     """Chama o gdown só com os parâmetros que a versão instalada aceita (a API muda entre versões)."""
     import inspect
@@ -544,12 +868,26 @@ PAGE = """<!doctype html>
  body{font-family:system-ui,sans-serif;background:#111;color:#eee;max-width:560px;margin:40px auto;padding:0 16px}
  input,button{width:100%;padding:10px;margin:6px 0 14px;border-radius:8px;border:1px solid #444;background:#1c1c1c;color:#eee;box-sizing:border-box}
  button{background:#5b8be6;border:0;cursor:pointer;font-weight:600}
+ .item{border-top:1px solid #333;padding:8px 0}.item:first-child{border-top:0}
+ .item input{margin:4px 0}.item button{width:auto;padding:6px 12px;margin:2px 4px 2px 0}
+ .why{color:#e6b95b;font-size:12px}.src{color:#777;font-size:11px;word-break:break-all}
  code{background:#222;padding:2px 6px;border-radius:4px}
  .box{background:#1c1c1c;border-radius:10px;padding:14px;margin-bottom:18px}
 </style></head><body>
 <h1>Francorr</h1>
 <div class="box"><b>Status do bot:</b> <span id="status">__STATUS__</span><br>
-<b>Links indexados:</b> __COUNT__</div>
+<b>Links indexados:</b> __COUNT__ (visíveis ao Sonarr) &middot; <b>Para revisar:</b> __REVIEW_COUNT__ &middot; <b>Ignorados:</b> __IGNORED_COUNT__</div>
+
+<h3>Para revisar</h3>
+<div class="box">__REVIEW__</div>
+
+<h3>Qualidade e reprocessamento</h3>
+<div class="box">
+<label>Etiqueta de qualidade padrão (usada só quando o post não diz a resolução/fonte)</label>
+<input id="qtag" value="__QTAG__" placeholder="ex.: 1080p WEB-DL (deixe vazio para não adicionar)">
+<button onclick="saveSettings()">Salvar etiqueta</button>
+<button onclick="reprocess()" style="background:#444">Reprocessar posts guardados (__MSG_COUNT__)</button>
+<span id="msg" style="color:#8c8"></span></div>
 
 <h3>Configuração do Discord</h3>
 <label>Token do bot</label>
@@ -576,6 +914,24 @@ async function save(){
   document.getElementById('status').textContent = j.status;
   document.getElementById('token').value = '';
 }
+async function post(path, body){
+  const r = await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});
+  return r.json();
+}
+async function saveSettings(){
+  await post('settings',{quality_tag:document.getElementById('qtag').value});
+  document.getElementById('msg').textContent = ' salvo (clique em Reprocessar para aplicar aos posts antigos)';
+}
+async function reprocess(){
+  const j = await post('reprocess');
+  document.getElementById('msg').textContent = ' ' + j.messages + ' post(s) reprocessado(s)';
+  setTimeout(()=>location.reload(),800);
+}
+async function review(id, action){
+  const t = document.getElementById('t'+id);
+  await post('review/'+id,{action:action,title:t?t.value:''});
+  location.reload();
+}
 </script></body></html>"""
 
 
@@ -592,11 +948,36 @@ def jobs_html():
     return "".join(out)
 
 
+def review_html():
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT id, title, url, reason FROM links WHERE status = 'review' ORDER BY id DESC LIMIT 50"
+        ).fetchall()
+    if not rows:
+        return "Nada para revisar."
+    out = []
+    for item_id, title, url, reason in rows:
+        out.append(
+            f'<div class="item"><div class="why">{html.escape(reason or "")}</div>'
+            f'<input id="t{item_id}" value="{html.escape(title or "", quote=True)}">'
+            f'<div class="src">{html.escape(url or "")}</div>'
+            f'<button onclick="review({item_id},\'approve\')">Aprovar</button>'
+            f'<button onclick="review({item_id},\'ignore\')" style="background:#555">Ignorar</button></div>'
+        )
+    return "".join(out)
+
+
+def counts():
+    with db() as conn:
+        c = dict(conn.execute("SELECT status, COUNT(*) FROM links GROUP BY status").fetchall())
+        msgs = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+    return c.get("ok", 0), c.get("review", 0), c.get("ignored", 0), msgs
+
+
 @APP.get("/", response_class=HTMLResponse)
 def home():
     cfg = load_config()
-    with db() as conn:
-        count = conn.execute("SELECT COUNT(*) FROM links").fetchone()[0]
+    count, n_review, n_ignored, n_msgs = counts()
     values = {
         "__STATUS__": html.escape(bot_state["status"]),
         "__COUNT__": str(count),
@@ -605,9 +986,14 @@ def home():
         "__SELF_URL__": html.escape(SELF_URL),
         "__JOBS__": jobs_html(),
         "__BUILD__": BUILD,
+        "__REVIEW__": review_html(),
+        "__REVIEW_COUNT__": str(n_review),
+        "__IGNORED_COUNT__": str(n_ignored),
+        "__MSG_COUNT__": str(n_msgs),
+        "__QTAG__": html.escape(cfg.get("quality_tag", ""), quote=True),
     }
     # substituição em uma passada só, para o conteúdo inserido nunca ser reinterpretado
-    return re.sub(r"__(?:STATUS|COUNT|CHANNEL|TOKEN_HINT|SELF_URL|JOBS|BUILD)__", lambda m: values[m.group(0)], PAGE)
+    return re.sub(r"__(?:STATUS|COUNT|CHANNEL|TOKEN_HINT|SELF_URL|JOBS|BUILD|REVIEW_COUNT|IGNORED_COUNT|MSG_COUNT|REVIEW|QTAG)__", lambda m: values[m.group(0)], PAGE)
 
 
 @APP.post("/config")
@@ -622,6 +1008,39 @@ async def update_config(request: Request):
     await start_bot()
     await asyncio.sleep(2)  # dá tempo de aparecer erro de login
     return {"status": bot_state["status"]}
+
+
+@APP.post("/settings")
+async def update_settings(request: Request):
+    body = await request.json()
+    cfg = load_config()
+    cfg["quality_tag"] = re.sub(r"\s+", " ", str(body.get("quality_tag", ""))).strip()[:40]
+    save_config(cfg)
+    return {"quality_tag": cfg["quality_tag"]}
+
+
+@APP.post("/reprocess")
+def reprocess():
+    return {"messages": reprocess_all()}
+
+
+@APP.post("/review/{item_id}")
+async def review_item(item_id: int, request: Request):
+    body = await request.json()
+    action = body.get("action")
+    with db() as conn:
+        if action == "approve":
+            title = clean_title(body.get("title"))
+            if not title:
+                return JSONResponse(status_code=400, content={"error": "título vazio"})
+            conn.execute(
+                "UPDATE links SET title = ?, status = 'ok', reason = NULL, edited = 1 WHERE id = ?", (title, item_id)
+            )
+        elif action == "ignore":
+            conn.execute("UPDATE links SET status = 'ignored', edited = 1 WHERE id = ?", (item_id,))
+        else:
+            return JSONResponse(status_code=400, content={"error": "ação inválida"})
+    return {"ok": True}
 
 
 # ---------------------------------------------------------------- Torznab
@@ -659,12 +1078,12 @@ def torznab_api(t: str = Query(None), q: str = Query(None), limit: int = Query(5
             pattern = "%" + "%".join(p for p in re.split(r"[\s._-]+", q.strip()) if p) + "%"
             rows = conn.execute(
                 "SELECT id, title, url, created_at FROM links "
-                "WHERE (title || ' ' || COALESCE(extra, '')) LIKE ? ORDER BY id DESC LIMIT ?",
+                "WHERE status = 'ok' AND (title || ' ' || COALESCE(extra, '')) LIKE ? ORDER BY id DESC LIMIT ?",
                 (pattern, limit),
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT id, title, url, created_at FROM links ORDER BY id DESC LIMIT ?", (limit,)
+                "SELECT id, title, url, created_at FROM links WHERE status = 'ok' ORDER BY id DESC LIMIT ?", (limit,)
             ).fetchall()
 
     items = ""
@@ -699,7 +1118,7 @@ def torznab_api(t: str = Query(None), q: str = Query(None), limit: int = Query(5
 @APP.get("/download")
 def download(id: int, redirect: int = 0):
     with db() as conn:
-        row = conn.execute("SELECT title, url FROM links WHERE id = ?", (id,)).fetchone()
+        row = conn.execute("SELECT title, url FROM links WHERE id = ? AND status = 'ok'", (id,)).fetchone()
     if not row:
         return JSONResponse(status_code=404, content={"error": "Link não encontrado"})
     title, url = row

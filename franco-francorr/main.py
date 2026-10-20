@@ -1,14 +1,17 @@
-# Francorr v1.0.9 - se este código estiver no seu repositório, o arquivo tem "def extract_releases" e "def reprocess_all"
+# Francorr v1.0.10 - se este código estiver no seu repositório, o arquivo tem "def guard" e "def login"
 import asyncio
 import hashlib
+import hmac
 import html
 import json
 import os
 import re
+import secrets
 import shutil
 import sqlite3
 import time
 from contextlib import asynccontextmanager
+from http.cookies import SimpleCookie
 from datetime import datetime, timezone
 from email.utils import format_datetime
 from urllib.parse import quote, urlparse
@@ -21,7 +24,7 @@ DATA_DIR = os.getenv("DATA_DIR", "/app/data")
 DB_PATH = os.path.join(DATA_DIR, "database.db")
 CONFIG_PATH = os.path.join(DATA_DIR, "config.json")
 SELF_URL = os.getenv("SELF_URL", "http://franco-francorr_web_1:8090")
-BUILD = "1.0.9"  # mesma versão do umbrel-app.yml; aparece no log e na página para conferir o que está rodando
+BUILD = "1.0.10"  # mesma versão do umbrel-app.yml; aparece no log e na página para conferir o que está rodando
 
 # Pastas de download (a pasta /downloads do Umbrel é a mesma que o Sonarr enxerga)
 DOWNLOAD_ROOT = os.getenv("DOWNLOAD_DIR", "/downloads")
@@ -493,6 +496,87 @@ def save_config(cfg):
     os.chmod(CONFIG_PATH, 0o600)
 
 
+# ---------------------------------------------------------------- login do painel
+# O painel (página inicial e suas ações) exige usuário e senha. Padrão: admin / admin (troque na própria página).
+# A senha nunca é guardada em texto: só um hash PBKDF2-SHA256 com sal aleatório. As rotas /api e /download
+# (Torznab e .torrent) continuam abertas, porque o Sonarr precisa delas sem login.
+AUTH_PATH = os.path.join(DATA_DIR, "auth.json")
+COOKIE = "francorr_session"
+SESSION_SECONDS = 7 * 24 * 3600
+PBKDF2_ROUNDS = 200_000
+_fails = {"count": 0, "until": 0.0}
+
+
+def hash_password(password, salt=None, rounds=PBKDF2_ROUNDS):
+    salt = salt or secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, rounds)
+    return {"salt": salt.hex(), "hash": digest.hex(), "rounds": rounds}
+
+
+def load_auth():
+    try:
+        with open(AUTH_PATH) as f:
+            auth = json.load(f)
+        if auth.get("user") and auth.get("hash") and auth.get("salt") and auth.get("secret"):
+            return auth
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
+    auth = {"user": "admin", "default": True, "secret": secrets.token_hex(32), **hash_password("admin")}
+    save_auth(auth)
+    return auth
+
+
+def save_auth(auth):
+    tmp = AUTH_PATH + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(auth, f)
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, AUTH_PATH)
+
+
+def check_credentials(user, password):
+    auth = load_auth()
+    calc = hash_password(password or "", bytes.fromhex(auth["salt"]), auth.get("rounds", PBKDF2_ROUNDS))["hash"]
+    ok_pass = hmac.compare_digest(calc, auth["hash"])
+    ok_user = hmac.compare_digest((user or "").encode("utf-8"), auth["user"].encode("utf-8"))
+    return ok_pass and ok_user
+
+
+def session_sig(auth, expires):
+    # trocar usuário/senha muda o hash e derruba as sessões antigas
+    key = (auth["secret"] + auth["hash"]).encode()
+    return hmac.new(key, f"{auth['user']}|{expires}".encode(), hashlib.sha256).hexdigest()
+
+
+def make_session():
+    auth = load_auth()
+    expires = int(time.time()) + SESSION_SECONDS
+    return f"{expires}.{session_sig(auth, expires)}"
+
+
+def cookie_header(value, max_age=SESSION_SECONDS):
+    return f"{COOKIE}={value}; Path=/; HttpOnly; SameSite=Lax; Max-Age={max_age}"
+
+
+def is_logged_in(request):
+    try:
+        jar = SimpleCookie(request.headers.get("cookie", ""))
+        value = jar[COOKIE].value
+        expires, sig = value.split(".", 1)
+        if int(expires) < time.time():
+            return False
+        return hmac.compare_digest(sig, session_sig(load_auth(), int(expires)))
+    except (KeyError, ValueError, AttributeError, TypeError):
+        return False
+
+
+def guard(request):
+    """Devolve uma resposta 401 se não estiver logado; None se pode seguir."""
+    if is_logged_in(request):
+        return None
+    return JSONResponse(status_code=401, content={"error": "não autenticado"})
+
+
 # ---------------------------------------------------------------- downloader
 # Como o Sonarr recebe os downloads (cliente "Torrent Blackhole"):
 #  1. o indexador entrega um .torrent válido, mas falso, com o link do Drive no campo "comment";
@@ -902,6 +986,15 @@ PAGE = """<!doctype html>
 Torrent Folder: <code>/downloads/francorr/torrents</code><br>
 Watch Folder: <code>/downloads/francorr/complete</code></div>
 
+<h3>Acesso ao painel</h3>
+<div class="box">__AUTH_WARN__
+<label>Usuário</label><input id="au" value="__AUTH_USER__" autocomplete="username">
+<label>Senha atual</label><input id="ac" type="password" autocomplete="current-password">
+<label>Nova senha (mínimo 6 caracteres)</label><input id="an" type="password" autocomplete="new-password">
+<button onclick="saveAccount()">Salvar usuário e senha</button>
+<button onclick="logout()" style="background:#555">Sair</button>
+<span id="amsg" style="color:#8c8"></span></div>
+
 <h3>Downloads</h3>
 <div class="box">__JOBS__</div>
 <p style="color:#777;font-size:12px">Código v__BUILD__</p>
@@ -916,6 +1009,7 @@ async function save(){
 }
 async function post(path, body){
   const r = await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});
+  if(r.status===401){location.reload()}
   return r.json();
 }
 async function saveSettings(){
@@ -927,10 +1021,42 @@ async function reprocess(){
   document.getElementById('msg').textContent = ' ' + j.messages + ' post(s) reprocessado(s)';
   setTimeout(()=>location.reload(),800);
 }
+async function saveAccount(){
+  const r = await fetch('account',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({user:document.getElementById('au').value,current:document.getElementById('ac').value,new_password:document.getElementById('an').value})});
+  const j = await r.json();
+  if(r.ok){location.reload()}else{document.getElementById('amsg').style.color='#e66';document.getElementById('amsg').textContent=' '+(j.error||'erro')}
+}
+async function logout(){ await post('logout'); location.reload(); }
 async function review(id, action){
   const t = document.getElementById('t'+id);
   await post('review/'+id,{action:action,title:t?t.value:''});
   location.reload();
+}
+</script></body></html>"""
+
+
+LOGIN_PAGE = """<!doctype html>
+<html lang="pt-BR"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Francorr - Entrar</title>
+<style>
+ body{font-family:system-ui,sans-serif;background:#111;color:#eee;max-width:360px;margin:12vh auto;padding:0 16px}
+ input,button{width:100%;padding:10px;margin:6px 0 14px;border-radius:8px;border:1px solid #444;background:#1c1c1c;color:#eee;box-sizing:border-box}
+ button{background:#5b8be6;border:0;cursor:pointer;font-weight:600}
+ #err{color:#e66;min-height:1.2em}
+</style></head><body>
+<h1>Francorr</h1>
+<label>Usuário</label><input id="u" autocomplete="username" autofocus>
+<label>Senha</label><input id="p" type="password" autocomplete="current-password">
+<button onclick="go()">Entrar</button><div id="err"></div>
+<script>
+document.getElementById('p').addEventListener('keydown',e=>{if(e.key==='Enter')go()});
+async function go(){
+  const r = await fetch('login',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({user:document.getElementById('u').value,password:document.getElementById('p').value})});
+  const j = await r.json();
+  if(r.ok){location.reload()}else{document.getElementById('err').textContent=j.error||'erro'}
 }
 </script></body></html>"""
 
@@ -975,8 +1101,11 @@ def counts():
 
 
 @APP.get("/", response_class=HTMLResponse)
-def home():
+def home(request: Request):
+    if not is_logged_in(request):
+        return LOGIN_PAGE
     cfg = load_config()
+    auth = load_auth()
     count, n_review, n_ignored, n_msgs = counts()
     values = {
         "__STATUS__": html.escape(bot_state["status"]),
@@ -991,13 +1120,20 @@ def home():
         "__IGNORED_COUNT__": str(n_ignored),
         "__MSG_COUNT__": str(n_msgs),
         "__QTAG__": html.escape(cfg.get("quality_tag", ""), quote=True),
+        "__AUTH_USER__": html.escape(auth["user"], quote=True),
+        "__AUTH_WARN__": (
+            '<p style="color:#e6b95b">Você está usando o acesso padrão (admin / admin). Troque abaixo.</p>'
+            if auth.get("default") else ""
+        ),
     }
     # substituição em uma passada só, para o conteúdo inserido nunca ser reinterpretado
-    return re.sub(r"__(?:STATUS|COUNT|CHANNEL|TOKEN_HINT|SELF_URL|JOBS|BUILD|REVIEW_COUNT|IGNORED_COUNT|MSG_COUNT|REVIEW|QTAG)__", lambda m: values[m.group(0)], PAGE)
+    return re.sub(r"__(?:STATUS|COUNT|CHANNEL|TOKEN_HINT|SELF_URL|JOBS|BUILD|REVIEW_COUNT|IGNORED_COUNT|MSG_COUNT|REVIEW|QTAG|AUTH_USER|AUTH_WARN)__", lambda m: values[m.group(0)], PAGE)
 
 
 @APP.post("/config")
 async def update_config(request: Request):
+    if (denied := guard(request)):
+        return denied
     body = await request.json()
     cfg = load_config()
     if body.get("token", "").strip():
@@ -1010,8 +1146,59 @@ async def update_config(request: Request):
     return {"status": bot_state["status"]}
 
 
+@APP.post("/login")
+async def login(request: Request):
+    now = time.time()
+    if _fails["until"] > now:
+        wait = int(_fails["until"] - now) + 1
+        return JSONResponse(status_code=429, content={"error": f"muitas tentativas, aguarde {wait}s"})
+    try:
+        body = await request.json()
+    except ValueError:
+        body = {}
+    if check_credentials(str(body.get("user", "")), str(body.get("password", ""))):
+        _fails["count"] = 0
+        return JSONResponse(content={"ok": True}, headers={"Set-Cookie": cookie_header(make_session())})
+    _fails["count"] += 1
+    if _fails["count"] >= 5:  # trava por 30s a cada 5 erros seguidos
+        _fails.update(count=0, until=now + 30)
+    await asyncio.sleep(1)  # deixa tentativa em massa mais lenta
+    return JSONResponse(status_code=401, content={"error": "usuário ou senha incorretos"})
+
+
+@APP.post("/logout")
+async def logout():
+    return JSONResponse(content={"ok": True}, headers={"Set-Cookie": cookie_header("", 0)})
+
+
+@APP.post("/account")
+async def update_account(request: Request):
+    if (denied := guard(request)):
+        return denied
+    body = await request.json()
+    user = str(body.get("user", "")).strip()
+    new = str(body.get("new_password", ""))
+    if not check_credentials(load_auth()["user"], str(body.get("current", ""))):
+        return JSONResponse(status_code=400, content={"error": "senha atual incorreta"})
+    if not user or len(user) > 64:
+        return JSONResponse(status_code=400, content={"error": "usuário inválido"})
+    auth = load_auth()
+    auth["user"] = user
+    if new:
+        if len(new) < 6 or new.lower() == "admin":
+            return JSONResponse(status_code=400, content={"error": "senha nova muito fraca (mínimo 6, e não pode ser 'admin')"})
+        auth.update(hash_password(new), default=False)
+    elif auth.get("default"):
+        return JSONResponse(status_code=400, content={"error": "defina uma senha nova"})
+    save_auth(auth)
+    # a assinatura da sessão depende do hash/usuário: renova o cookie para você continuar logado
+    return JSONResponse(content={"ok": True}, headers={"Set-Cookie": cookie_header(make_session())})
+
+
 @APP.post("/settings")
 async def update_settings(request: Request):
+    if (denied := guard(request)):
+        return denied
     body = await request.json()
     cfg = load_config()
     cfg["quality_tag"] = re.sub(r"\s+", " ", str(body.get("quality_tag", ""))).strip()[:40]
@@ -1020,12 +1207,16 @@ async def update_settings(request: Request):
 
 
 @APP.post("/reprocess")
-def reprocess():
+def reprocess(request: Request):
+    if (denied := guard(request)):
+        return denied
     return {"messages": reprocess_all()}
 
 
 @APP.post("/review/{item_id}")
 async def review_item(item_id: int, request: Request):
+    if (denied := guard(request)):
+        return denied
     body = await request.json()
     action = body.get("action")
     with db() as conn:

@@ -1,0 +1,18 @@
+version: "3.7"
+
+services:
+  livekit:
+    image: livekit/livekit-server:v1.8.0
+    command: --dev --bind 0.0.0.0 --key-file /app/keys.json
+    restart: on-failure
+    ports:
+      # Porta de Sinalização (HTTP / WebSocket)
+      - "${APP_LIVEKIT_PORT}:7880"
+      # Portas WebRTC (Essenciais para o tráfego de mídia fluir)
+      - "7881:7881/tcp"
+      - "7882:7882/udp"
+    volumes:
+      # Persiste as chaves de API geradas automaticamente na pasta de dados do Umbrel
+      - ${APP_DATA_DIR}/data:/app
+    environment:
+      - LIVEKIT_KEYS_FILE=/app/keys.json

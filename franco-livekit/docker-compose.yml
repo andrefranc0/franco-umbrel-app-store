@@ -1,47 +1,37 @@
 version: "3.7"
 
 services:
-  # Servidor SFU Principal do LiveKit
+  app_proxy:
+    environment:
+      # Ao clicar no atalho no umbrelOS, abre o painel de configuração
+      APP_HOST: custom-livekit_panel_1
+      APP_PORT: 3000
+
+  # Painel de configuração (Node puro, sem dependências npm).
+  # Os arquivos ficam em ${APP_DATA_DIR}/panel (o Umbrel copia a pasta do app).
+  panel:
+    image: node:20-alpine
+    working_dir: /panel
+    command: node server.js
+    restart: on-failure
+    environment:
+      APP_ID: custom-livekit
+      PORT: 3000
+    volumes:
+      - ${APP_DATA_DIR}/panel:/panel:ro
+      - ${APP_DATA_DIR}/data/config:/config
+      # Necessário para o painel reiniciar o container do LiveKit
+      - /var/run/docker.sock:/var/run/docker.sock
+
   livekit:
-    image: livekit/livekit-server:v1.8.0
-    restart: always
-    command: --bind 0.0.0.0 --udp-port 7882 --config /app/livekit.json
+    image: livekit/livekit-server:v1.9.0
+    command: --config /etc/livekit/livekit.yaml
+    restart: unless-stopped
+    depends_on:
+      - panel
     ports:
-      - "${APP_LIVEKIT_PORT}:7880"
-      - "7881:7881/tcp"
+      - "7880:7880"
+      - "7881:7881"
       - "7882:7882/udp"
     volumes:
-      - ${APP_DATA_DIR}/data:/app
-    entrypoint:
-      - "sh"
-      - "-c"
-      - |
-        # Cria um arquivo de configuração padrão seguro se ele não existir
-        if [ ! -f /app/livekit.json ]; then
-          cat <<EOF > /app/livekit.json
-        {
-          "port": 7880,
-          "bind_addresses": [""],
-          "keys": {
-            "francoTS6Server": "mude_esse_secret_no_seu_painel_ts6_ou_aqui_com_mais_de_32_letras"
-          },
-          "rtc": {
-            "tcp_port": 7881,
-            "udp_port": 7882,
-            "use_external_ip": true
-          }
-        }
-        EOF
-        fi
-        exec /livekit-server --config /app/livekit.json
-
-  # Painel Web Visual para gerenciar o LiveKit (Interface Gráfica)
-  livekit-admin:
-    image: livekit/livekit-cli:latest
-    restart: always
-    ports:
-      - "7885:8080" # Acesse o painel pelo IP-DO-UMBREL:7885
-    environment:
-      # O painel vai se conectar automaticamente no seu servidor local
-      - LIVEKIT_URL=http://livekit:7880
-    command: dashboard
+      - ${APP_DATA_DIR}/data/config:/etc/livekit:ro

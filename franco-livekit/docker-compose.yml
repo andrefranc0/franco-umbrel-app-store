@@ -1,11 +1,17 @@
 version: "3.7"
 
 services:
-  init-livekit:
-    image: alpine:latest
+  livekit:
+    image: livekit/livekit-server:v1.8.0
+    restart: always
+    ports:
+      - "${APP_LIVEKIT_PORT}:7880"
+      - "7881:7881/tcp"
+      - "7882:7882/udp"
     volumes:
       - ${APP_DATA_DIR}/data:/app
-    command: >
+    # Rodamos o script de checagem e o LiveKit sequencialmente no mesmo contêiner
+    entrypoint: >
       sh -c "
       if [ ! -f /app/livekit.yaml ]; then
         API_KEY=\$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 16);
@@ -33,22 +39,10 @@ services:
         echo '==================================================';
         echo '   LIVEKIT JÁ CONFIGURADO. EXIBINDO AS CHAVES ATUAIS:';
         echo '==================================================';
-        # Lê o arquivo atual e filtra apenas as chaves geradas anteriormente
         grep -A 1 'keys:' /app/livekit.yaml | tail -n 1 | awk -F: '{print \"API KEY: \" \$1 \"\nSECRET KEY: \" \$2}' | tr -d ' \"'
         echo '==================================================';
-      fi
+      fi;
+      
+      # Executa o servidor LiveKit mantendo o contêiner ativo (Evita o Exit Code 1)
+      exec /livekit-server --config /app/livekit.yaml
       "
-
-  livekit:
-    image: livekit/livekit-server:v1.8.0
-    command: --config /app/livekit.yaml
-    restart: always
-    depends_on:
-      init-livekit:
-        condition: service_completed_successfully
-    ports:
-      - "${APP_LIVEKIT_PORT}:7880"
-      - "7881:7881/tcp"
-      - "7882:7882/udp"
-    volumes:
-      - ${APP_DATA_DIR}/data:/app

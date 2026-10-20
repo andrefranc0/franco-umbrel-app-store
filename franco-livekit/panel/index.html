@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LiveKit · Configuração</title>
+<style>
+  :root {
+    --bg: #0e1116; --card: #161b22; --border: #262d38; --text: #e6edf3; --muted: #8b949e;
+    --accent: #3b82f6; --accent-h: #2563eb; --danger: #ef4444; --ok: #22c55e; --warn: #f59e0b;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 24px 16px 80px; }
+  header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
+  h1 { font-size: 22px; margin: 0; }
+  .badge { display: inline-flex; align-items: center; gap: 8px; padding: 4px 12px; border-radius: 999px; background: var(--card); border: 1px solid var(--border); font-size: 13px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .dot.running { background: var(--ok); } .dot.exited, .dot.dead { background: var(--danger); } .dot.restarting { background: var(--warn); }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 18px; margin-bottom: 16px; }
+  .card h2 { font-size: 15px; margin: 0 0 4px; }
+  .card p.hint { margin: 0 0 14px; color: var(--muted); font-size: 13px; }
+  .keyrow { border: 1px solid var(--border); border-radius: 10px; padding: 12px; margin-bottom: 10px; background: #11151b; }
+  label { display: block; font-size: 12px; color: var(--muted); margin: 0 0 4px; }
+  .field { display: flex; gap: 6px; margin-bottom: 10px; }
+  .field:last-child { margin-bottom: 0; }
+  input[type=text], input[type=password], select {
+    flex: 1; min-width: 0; padding: 9px 11px; background: var(--bg); border: 1px solid var(--border);
+    color: var(--text); border-radius: 8px; font: 13px ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  select { font-family: inherit; flex: none; }
+  input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  button { cursor: pointer; border: 1px solid var(--border); background: var(--card); color: var(--text); padding: 8px 12px; border-radius: 8px; font-size: 13px; }
+  button:hover { border-color: var(--muted); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; padding: 10px 18px; }
+  button.primary:hover { background: var(--accent-h); }
+  button.danger { color: var(--danger); }
+  button:disabled { opacity: .5; cursor: default; }
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
+  .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  .check { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--text); margin: 0; }
+  .conn { font: 13px ui-monospace, monospace; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 8px 11px; display: flex; justify-content: space-between; gap: 8px; margin-bottom: 8px; align-items: center; word-break: break-all; }
+  .conn span.l { color: var(--muted); margin-right: 8px; }
+  .savebar { position: fixed; left: 0; right: 0; bottom: 0; background: rgba(14,17,22,.92); backdrop-filter: blur(8px); border-top: 1px solid var(--border); padding: 12px 16px; }
+  .savebar .in { max-width: 760px; margin: 0 auto; display: flex; gap: 12px; align-items: center; justify-content: space-between; }
+  #msg { font-size: 13px; }
+  #msg.ok { color: var(--ok); } #msg.err { color: var(--danger); } #msg.warn { color: var(--warn); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>LiveKit · Configuração</h1>
+    <span class="badge"><span class="dot" id="dot"></span><span id="status">carregando…</span></span>
+  </header>
+
+  <div class="card">
+    <h2>Chaves de API</h2>
+    <p class="hint">Use essas credenciais no seu app/SDK para gerar tokens de acesso. O secret deve ter ao menos 32 caracteres.</p>
+    <div id="keys"></div>
+    <div class="actions">
+      <button id="add">+ Gerar nova chave</button>
+      <button id="addManual">+ Adicionar manualmente</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Opções do servidor</h2>
+    <p class="hint">Aplicadas ao salvar (o LiveKit é reiniciado).</p>
+    <div class="row">
+      <div>
+        <label for="logLevel">Nível de log</label>
+        <select id="logLevel">
+          <option>debug</option><option>info</option><option>warn</option><option>error</option>
+        </select>
+      </div>
+      <label class="check"><input type="checkbox" id="extIp"> Detectar IP externo automaticamente (use_external_ip)</label>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Conexão</h2>
+    <p class="hint">Endereços para usar no seu cliente (rede local). Para acesso pela internet, libere as portas 7880/tcp, 7881/tcp e 7882/udp no roteador.</p>
+    <div class="conn"><div><span class="l">WebSocket</span><span id="wsUrl"></span></div><button data-copy="wsUrl">Copiar</button></div>
+    <div class="conn"><div><span class="l">HTTP</span><span id="httpUrl"></span></div><button data-copy="httpUrl">Copiar</button></div>
+  </div>
+
+  <div class="card">
+    <h2>Manutenção</h2>
+    <p class="hint">Reinicia o servidor LiveKit sem alterar a configuração.</p>
+    <button id="restart">Reiniciar LiveKit</button>
+  </div>
+</div>
+
+<div class="savebar"><div class="in">
+  <span id="msg"></span>
+  <button class="primary" id="save">Salvar e aplicar</button>
+</div></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let keys = [];
+
+function msg(text, cls) { const m = $('msg'); m.textContent = text; m.className = cls || ''; }
+
+function render() {
+  const box = $('keys');
+  box.innerHTML = '';
+  keys.forEach((k, i) => {
+    const row = document.createElement('div');
+    row.className = 'keyrow';
+    row.innerHTML = `
+      <label>API key</label>
+      <div class="field"><input type="text" data-i="${i}" data-f="key" autocomplete="off" spellcheck="false"><button data-act="copy-key" data-i="${i}">Copiar</button></div>
+      <label>API secret</label>
+      <div class="field"><input type="password" data-i="${i}" data-f="secret" autocomplete="off" spellcheck="false">
+        <button data-act="show" data-i="${i}">Mostrar</button>
+        <button data-act="copy-secret" data-i="${i}">Copiar</button></div>
+      <div class="actions"><button data-act="regen" data-i="${i}">Gerar novo secret</button><button class="danger" data-act="del" data-i="${i}">Remover</button></div>`;
+    row.querySelector('[data-f=key]').value = k.key;
+    row.querySelector('[data-f=secret]').value = k.secret;
+    box.appendChild(row);
+  });
+}
+
+async function api(url, opts) {
+  const r = await fetch(url, opts);
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || 'Erro ' + r.status);
+  return j;
+}
+
+function showStatus(s) {
+  $('status').textContent = s;
+  $('dot').className = 'dot ' + s;
+}
+
+async function load() {
+  const s = await api('/api/state');
+  keys = s.keys;
+  $('logLevel').value = s.logLevel;
+  $('extIp').checked = !!s.useExternalIp;
+  showStatus(s.status);
+  render();
+  $('wsUrl').textContent = 'ws://' + location.hostname + ':7880';
+  $('httpUrl').textContent = 'http://' + location.hostname + ':7880';
+}
+
+async function copy(text) {
+  try { await navigator.clipboard.writeText(text); msg('Copiado.', 'ok'); }
+  catch {
+    const t = document.createElement('textarea'); t.value = text; document.body.appendChild(t); t.select();
+    document.execCommand('copy'); t.remove(); msg('Copiado.', 'ok');
+  }
+}
+
+$('keys').addEventListener('input', (e) => {
+  const i = e.target.dataset.i, f = e.target.dataset.f;
+  if (i !== undefined && f) keys[i][f] = e.target.value;
+});
+
+$('keys').addEventListener('click', async (e) => {
+  const b = e.target.closest('button'); if (!b) return;
+  const i = +b.dataset.i, act = b.dataset.act;
+  if (act === 'copy-key') copy(keys[i].key);
+  if (act === 'copy-secret') copy(keys[i].secret);
+  if (act === 'show') {
+    const inp = b.parentElement.querySelector('input');
+    const show = inp.type === 'password';
+    inp.type = show ? 'text' : 'password';
+    b.textContent = show ? 'Ocultar' : 'Mostrar';
+  }
+  if (act === 'regen') { keys[i].secret = (await api('/api/generate')).secret; render(); msg('Novo secret gerado. Clique em Salvar para aplicar.', 'warn'); }
+  if (act === 'del') {
+    if (keys.length === 1) return msg('É necessário manter ao menos uma chave.', 'err');
+    if (confirm('Remover a chave "' + keys[i].key + '"? Apps que a usam deixarão de funcionar.')) { keys.splice(i, 1); render(); msg('Clique em Salvar para aplicar.', 'warn'); }
+  }
+});
+
+$('add').onclick = async () => { keys.push(await api('/api/generate')); render(); msg('Nova chave adicionada. Clique em Salvar para aplicar.', 'warn'); };
+$('addManual').onclick = () => { keys.push({ key: '', secret: '' }); render(); };
+
+document.querySelectorAll('[data-copy]').forEach((b) => b.onclick = () => copy($(b.dataset.copy).textContent));
+
+$('save').onclick = async () => {
+  $('save').disabled = true; msg('Salvando…');
+  try {
+    const r = await api('/api/config', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ keys, logLevel: $('logLevel').value, useExternalIp: $('extIp').checked }),
+    });
+    if (r.restarted) msg('Salvo. LiveKit reiniciado.', 'ok');
+    else msg('Salvo, mas não foi possível reiniciar: ' + r.warning, 'warn');
+    setTimeout(load, 3000);
+  } catch (e) { msg(e.message, 'err'); }
+  $('save').disabled = false;
+};
+
+$('restart').onclick = async () => {
+  $('restart').disabled = true; msg('Reiniciando…');
+  try { await api('/api/restart', { method: 'POST' }); msg('LiveKit reiniciado.', 'ok'); setTimeout(load, 3000); }
+  catch (e) { msg(e.message, 'err'); }
+  $('restart').disabled = false;
+};
+
+load().catch((e) => msg(e.message, 'err'));
+setInterval(() => api('/api/state').then((s) => showStatus(s.status)).catch(() => {}), 10000);
+</script>
+</body>
+</html>

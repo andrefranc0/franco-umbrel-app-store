@@ -4,7 +4,7 @@ services:
   app_proxy:
     environment:
       # Ao clicar no atalho no umbrelOS, abre o painel de configuração
-      APP_HOST: custom-livekit_panel_1
+      APP_HOST: franco-livekit_panel_1
       APP_PORT: 3000
 
   # Painel de configuração (Node puro, sem dependências npm).
@@ -15,7 +15,7 @@ services:
     command: node server.js
     restart: on-failure
     environment:
-      APP_ID: custom-livekit
+      APP_ID: franco-livekit
       PORT: 3000
     volumes:
       - ${APP_DATA_DIR}/panel:/panel:ro

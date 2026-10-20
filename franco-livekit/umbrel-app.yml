@@ -1,15 +1,34 @@
-id: franco-livekit
-name: LiveKit Server
-version: "1.8.0"
 manifestVersion: 1
-description: Servidor SFU de alta performance com Painel Web Administrativo incluso.
+id: franco-livekit
+category: developer
+name: LiveKit
+version: "1.9.0"
+tagline: Servidor WebRTC open source para áudio, vídeo e dados em tempo real
+description: >-
+  LiveKit é uma infraestrutura WebRTC escalável para aplicações de áudio,
+  vídeo e dados em tempo real.
+
+
+  Esta versão inclui um painel de configuração que abre ao clicar no ícone do
+  app no umbrelOS. Por ele você cria, gera, edita e remove as chaves de API
+  (API key / API secret) e aplica as mudanças reiniciando o servidor, sem
+  precisar editar arquivos por SSH.
+
+
+  Portas expostas na rede local: 7880 (sinalização HTTP/WebSocket),
+  7881 (RTC sobre TCP) e 7882 UDP (RTC sobre UDP). Para uso pela internet,
+  libere essas portas no seu roteador.
 developer: LiveKit
 website: https://livekit.io
-router: franco-livekit
-port: 8000
-submitter: Franco
-submissionDate: 2026-10-19
-icon: https://githubusercontent.com
-gallery:
-  - https://githubusercontent.com
-category: Utilities
+dependencies: []
+repo: https://github.com/livekit/livekit
+support: https://github.com/livekit/livekit/issues
+port: 3891
+gallery: []
+path: ""
+defaultUsername: ""
+defaultPassword: ""
+submitter: Você
+submission: ""
+releaseNotes: >-
+  Primeira versão com painel de configuração de chaves.

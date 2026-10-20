@@ -14,22 +14,27 @@ services:
       - "sh"
       - "-c"
       - |
-        # Força a remoção do yaml antigo corrompido para não quebrar mais a inicialização
+        # 1. Remove qualquer arquivo yaml residual antigo
         if [ -f /app/livekit.yaml ]; then
           rm -f /app/livekit.yaml
         fi
 
-        # Se o keys.txt não existir, gera as novas credenciais
+        # 2. Se o keys.txt não existir, gera chaves alfanuméricas puras de alta segurança
         if [ ! -f /app/keys.txt ]; then
-          echo "Gerando chaves oficiais do LiveKit..."
-          /livekit-server generate-keys > /app/keys.txt
+          echo "Gerando credenciais limpas para o LiveKit..."
+          NEW_API_KEY=$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 16)
+          NEW_SECRET_KEY=$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 32)
+          
+          # Salva em texto puro para persistência e consultas futuras
+          echo "$NEW_API_KEY" > /app/keys.txt
+          echo "$NEW_SECRET_KEY" >> /app/keys.txt
         fi
 
-        # Extrai as chaves geradas
-        API_KEY=$(head -n 1 /app/keys.txt | awk '{print $2}')
-        SECRET_KEY=$(tail -n 1 /app/keys.txt | awk '{print $2}')
+        # 3. Lê as chaves salvas sem nenhuma interferência de formatação
+        API_KEY=$(head -n 1 /app/keys.txt)
+        SECRET_KEY=$(tail -n 1 /app/keys.txt)
 
-        # Escreve a configuração no formato JSON (Elimina qualquer erro de espaço ou indentação do YAML)
+        # 4. Sobrescreve o arquivo JSON com as credenciais válidas
         cat <<EOF > /app/livekit.json
         {
           "port": 7880,
@@ -52,5 +57,5 @@ services:
         echo " SECRET KEY (TEAMSPEAK 6): $SECRET_KEY"
         echo "=================================================="
 
-        # Executa o servidor apontando para o arquivo JSON estruturado
+        # 5. Executa o servidor LiveKit
         exec /livekit-server --config /app/livekit.json

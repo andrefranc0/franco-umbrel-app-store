@@ -1,14 +1,47 @@
 version: "3.7"
 
 services:
+  # Contêiner de inicialização: roda antes do LiveKit para gerar o arquivo de configuração
+  init-livekit:
+    image: alpine:latest
+    volumes:
+      - ${APP_DATA_DIR}/data:/app
+    command: >
+      sh -c "
+      if [ ! -f /app/livekit.yaml ]; then
+        echo 'Criando livekit.yaml automaticamente...';
+        # Gera chaves aleatórias para segurança do TeamSpeak 6
+        API_KEY=\$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 16);
+        SECRET_KEY=\$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 32);
+        
+        cat <<EOF > /app/livekit.yaml
+        port: 7880
+        bind_addresses:
+          - ''
+        keys:
+          \${API_KEY}: '\${SECRET_KEY}'
+        rtc:
+          tcp_port: 7881
+          udp_port: 7882
+          use_external_ip: true
+        EOF
+        echo 'Arquivo criado com sucesso!';
+      else
+        echo 'livekit.yaml já existe. Pulando criação.';
+      fi
+      "
+
+  # O servidor SFU principal do LiveKit
   livekit:
     image: livekit/livekit-server:v1.8.0
     command: --config /app/livekit.yaml
     restart: always
+    # Garante que o LiveKit só vai ligar DEPOIS que o script acima terminar com sucesso
+    depends_on:
+      init-livekit:
+        condition: service_completed_successfully
     ports:
-      # Porta HTTP/WebSocket para o TeamSpeak se conectar
       - "${APP_LIVEKIT_PORT}:7880"
-      # Portas WebRTC para transmissão de áudio/vídeo
       - "7881:7881/tcp"
       - "7882:7882/udp"
     volumes:

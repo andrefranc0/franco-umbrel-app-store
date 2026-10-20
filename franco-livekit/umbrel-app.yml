@@ -7,9 +7,21 @@ developer: LiveKit
 website: https://livekit.io
 router: livekit
 port: 7880
-submitter: Seu Nome
+submitter: Franco
 submissionDate: 2026-10-19
 icon: https://githubusercontent.com
 gallery:
   - https://githubusercontent.com
 category: Utilities
+# Cria os campos de texto seguros na interface do Umbrel:
+inputs:
+  - id: livekit_api_key
+    name: API Key para o TeamSpeak 6
+    type: text
+    required: true
+    default: "francoTS6Server"
+  - id: livekit_secret_key
+    name: Secret Key (Mínimo 32 caracteres)
+    type: password
+    required: true
+    default: "MudeEssaSenhaParaUmaComMaisDe32Letras"

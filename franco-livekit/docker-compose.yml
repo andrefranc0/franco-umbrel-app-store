@@ -1,7 +1,6 @@
 version: "3.7"
 
 services:
-  # Contêiner de inicialização: roda antes do LiveKit para gerar o arquivo de configuração
   init-livekit:
     image: alpine:latest
     volumes:
@@ -9,8 +8,6 @@ services:
     command: >
       sh -c "
       if [ ! -f /app/livekit.yaml ]; then
-        echo 'Criando livekit.yaml automaticamente...';
-        # Gera chaves aleatórias para segurança do TeamSpeak 6
         API_KEY=\$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 16);
         SECRET_KEY=\$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 32);
         
@@ -25,18 +22,27 @@ services:
           udp_port: 7882
           use_external_ip: true
         EOF
-        echo 'Arquivo criado com sucesso!';
+        
+        echo '==================================================';
+        echo '   LIVEKIT INSTALADO COM SUCESSO COPIE SUAS CHAVES:';
+        echo '==================================================';
+        echo \"API KEY (TEAMSPEAK 6): \$API_KEY\";
+        echo \"SECRET KEY (TEAMSPEAK 6): \$SECRET_KEY\";
+        echo '==================================================';
       else
-        echo 'livekit.yaml já existe. Pulando criação.';
+        echo '==================================================';
+        echo '   LIVEKIT JÁ CONFIGURADO. EXIBINDO AS CHAVES ATUAIS:';
+        echo '==================================================';
+        # Lê o arquivo atual e filtra apenas as chaves geradas anteriormente
+        grep -A 1 'keys:' /app/livekit.yaml | tail -n 1 | awk -F: '{print \"API KEY: \" \$1 \"\nSECRET KEY: \" \$2}' | tr -d ' \"'
+        echo '==================================================';
       fi
       "
 
-  # O servidor SFU principal do LiveKit
   livekit:
     image: livekit/livekit-server:v1.8.0
     command: --config /app/livekit.yaml
     restart: always
-    # Garante que o LiveKit só vai ligar DEPOIS que o script acima terminar com sucesso
     depends_on:
       init-livekit:
         condition: service_completed_successfully

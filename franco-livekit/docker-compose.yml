@@ -10,39 +10,40 @@ services:
       - "7882:7882/udp"
     volumes:
       - ${APP_DATA_DIR}/data:/app
-    # Rodamos o script de checagem e o LiveKit sequencialmente no mesmo contêiner
-    entrypoint: >
-      sh -c "
-      if [ ! -f /app/livekit.yaml ]; then
-        API_KEY=\$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 16);
-        SECRET_KEY=\$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 32);
-        
-        cat <<EOF > /app/livekit.yaml
+    # O uso do '|' garante que o Docker respeite as quebras de linha exatas do script
+    entrypoint:
+      - "sh"
+      - "-c"
+      - |
+        if [ ! -f /app/livekit.yaml ]; then
+          API_KEY=$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 16)
+          SECRET_KEY=$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 32)
+          
+          cat <<EOF > /app/livekit.yaml
         port: 7880
         bind_addresses:
           - ''
         keys:
-          \${API_KEY}: '\${SECRET_KEY}'
+          ${API_KEY}: '${SECRET_KEY}'
         rtc:
           tcp_port: 7881
           udp_port: 7882
           use_external_ip: true
         EOF
+          
+          echo "=================================================="
+          echo "   LIVEKIT INSTALADO COM SUCESSO COPIE SUAS CHAVES:"
+          echo "=================================================="
+          echo "API KEY (TEAMSPEAK 6): $API_KEY"
+          echo "SECRET KEY (TEAMSPEAK 6): $SECRET_KEY"
+          echo "=================================================="
+        else
+          echo "=================================================="
+          echo "   LIVEKIT JÁ CONFIGURADO. EXIBINDO AS CHAVES ATUAIS:"
+          echo "=================================================="
+          grep -A 1 'keys:' /app/livekit.yaml | tail -n 1 | awk -F: '{print "API KEY: " $1 "\nSECRET KEY: " $2}' | tr -d ' "'
+          echo "=================================================="
+        fi
         
-        echo '==================================================';
-        echo '   LIVEKIT INSTALADO COM SUCESSO COPIE SUAS CHAVES:';
-        echo '==================================================';
-        echo \"API KEY (TEAMSPEAK 6): \$API_KEY\";
-        echo \"SECRET KEY (TEAMSPEAK 6): \$SECRET_KEY\";
-        echo '==================================================';
-      else
-        echo '==================================================';
-        echo '   LIVEKIT JÁ CONFIGURADO. EXIBINDO AS CHAVES ATUAIS:';
-        echo '==================================================';
-        grep -A 1 'keys:' /app/livekit.yaml | tail -n 1 | awk -F: '{print \"API KEY: \" \$1 \"\nSECRET KEY: \" \$2}' | tr -d ' \"'
-        echo '==================================================';
-      fi;
-      
-      # Executa o servidor LiveKit mantendo o contêiner ativo (Evita o Exit Code 1)
-      exec /livekit-server --config /app/livekit.yaml
-      "
+        # Inicia o servidor substituindo o processo do shell
+        exec /livekit-server --config /app/livekit.yaml

@@ -1,4 +1,4 @@
-# Francorr v1.0.11 - se este código estiver no seu repositório, o arquivo tem "def self_update"
+# Francorr v1.0.12 - se este código estiver no seu repositório, o arquivo tem "def download_discord_attachment"
 import asyncio
 import hashlib
 import hmac
@@ -10,6 +10,7 @@ import secrets
 import shutil
 import sqlite3
 import time
+import urllib.error
 import urllib.request
 from contextlib import asynccontextmanager
 from http.cookies import SimpleCookie
@@ -25,7 +26,7 @@ DATA_DIR = os.getenv("DATA_DIR", "/app/data")
 DB_PATH = os.path.join(DATA_DIR, "database.db")
 CONFIG_PATH = os.path.join(DATA_DIR, "config.json")
 SELF_URL = os.getenv("SELF_URL", "http://franco-francorr_web_1:8090")
-BUILD = "1.0.11"  # mesma versão do umbrel-app.yml; aparece no log e na página para conferir o que está rodando
+BUILD = "1.0.12"  # mesma versão do umbrel-app.yml; aparece no log e na página para conferir o que está rodando
 
 # Pastas de download (a pasta /downloads do Umbrel é a mesma que o Sonarr enxerga)
 DOWNLOAD_ROOT = os.getenv("DOWNLOAD_DIR", "/downloads")
@@ -40,6 +41,7 @@ os.makedirs(DATA_DIR, exist_ok=True)
 
 # ---------------------------------------------------------------- links
 DRIVE_HOSTS = ("drive.google.com", "docs.google.com", "drive.usercontent.google.com")
+VIDEO_EXTS = {".mkv", ".mp4", ".avi", ".webm", ".mov", ".ts", ".m2ts", ".wmv", ".flv", ".m4v"}
 
 
 def drive_file_id(url):
@@ -90,6 +92,7 @@ def init_db():
             ("message_id", "TEXT"),  # mensagem do Discord de onde veio
             ("ukey", "TEXT"),  # chave do link (id do arquivo no Drive)
             ("edited", "INTEGER DEFAULT 0"),  # 1 = você mexeu à mão; o app não sobrescreve mais
+            ("kind", "TEXT DEFAULT 'drive'"),  # drive | discord_attachment | other
         ):
             if name not in cols:
                 conn.execute(f"ALTER TABLE links ADD COLUMN {name} {ddl}")
@@ -107,6 +110,9 @@ def init_db():
             )
             """
         )
+        mcols = {r[1] for r in conn.execute("PRAGMA table_info(messages)")}
+        if "attachments" not in mcols:  # JSON [{id, filename, url}] dos arquivos anexados ao post
+            conn.execute("ALTER TABLE messages ADD COLUMN attachments TEXT DEFAULT '[]'")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS jobs (
@@ -120,6 +126,9 @@ def init_db():
             )
             """
         )
+        jcols = {r[1] for r in conn.execute("PRAGMA table_info(jobs)")}
+        if "kind" not in jcols:
+            conn.execute("ALTER TABLE jobs ADD COLUMN kind TEXT DEFAULT 'drive'")
 
 
 init_db()
@@ -282,6 +291,13 @@ def apply_quality(title, text, tag):
     return (title + " " + " ".join(add)).strip() if add else title
 
 
+def attachment_plain(filename):
+    """Transforma o nome de um arquivo anexado em texto legível, tipo uma linha de post."""
+    name = os.path.splitext(filename or "")[0]
+    name = re.sub(r"[._]+", " ", name)
+    return clean_name(re.sub(r"\s+", " ", name).strip())
+
+
 def fallback_title(rows):
     for r in rows:
         if not r["deco"] and len(re.findall(r"[A-Za-zÀ-ÿ0-9]", r["plain"])) >= 6:
@@ -299,15 +315,21 @@ def message_text(message):
     return "\n".join(p for p in parts if p)
 
 
-def extract_releases(text, quality_tag=""):
-    """Devolve uma lista de dicts {title, url, extra, status, reason}, um por link encontrado.
-    status: 'ok' (entendi), 'review' (precisa de revisão) ou 'ignored' (link de serviço não suportado)."""
+def extract_releases(text, quality_tag="", attachments=None):
+    """Devolve uma lista de dicts {title, url, extra, status, reason, kind}, um por link/anexo encontrado.
+    status: 'ok' (entendi), 'review' (precisa de revisão) ou 'ignored' (link de serviço não suportado).
+    attachments: lista opcional de (id, nome_do_arquivo, url) dos arquivos de vídeo anexados ao post."""
     rows = []
     for raw in (text or "").splitlines():
         links = [(m.group(2), clean_text(m.group(1))) for m in MD_LINK_RE.finditer(raw)]
         links += [(u, "") for u in URL_RE.findall(MD_LINK_RE.sub(" ", raw))]
         plain = clean_text(raw)
         rows.append({"plain": plain, "links": links, "deco": is_decorative(plain)})
+    for att_id, filename, url in (attachments or []):
+        # entra como se fosse mais uma linha do post, depois das demais: o resto do texto
+        # (cabeçalho com série/temporada, linhas de cima) continua servindo de contexto para ela
+        plain = attachment_plain(filename)
+        rows.append({"plain": plain, "links": [(url, plain)], "deco": False, "att_id": att_id})
     if not any(r["links"] for r in rows):
         return []
 
@@ -378,13 +400,20 @@ def extract_releases(text, quality_tag=""):
     pack_ok = bool(series_hdr and season_hdr is not None and PACK_RE.search(search_text))
     out = []
     for i, r in enumerate(rows):
+        is_att = "att_id" in r
         for url, anchor in r["links"]:
             url = url.rstrip(".,;")
             host = host_of(url)
             rel = {"url": url, "extra": search_text}
-            if host not in DRIVE_HOSTS:
-                rel.update(title=fallback_title(rows), status="ignored",
-                           reason=f"serviço não suportado ({host or 'link inválido'}) - só Google Drive é baixado")
+            if is_att:
+                rel["key"] = "att:" + r["att_id"]
+                rel["kind"] = "discord_attachment"
+            elif host in DRIVE_HOSTS:
+                rel["key"] = link_key(url)
+                rel["kind"] = "drive"
+            else:
+                rel.update(title=fallback_title(rows), status="ignored", kind="other", key=link_key(url),
+                           reason=f"serviço não suportado ({host or 'link inválido'}) - só Google Drive e arquivos enviados no Discord são baixados")
                 out.append(rel)
                 continue
             reasons = []
@@ -411,11 +440,11 @@ def clean_title(title):
     return re.sub(r"\s+", " ", title).strip()[:250]
 
 
-def apply_message(conn, mid, text, created, qtag):
-    """Aplica o parser a uma mensagem: cria/atualiza os links dela. Não mexe no que você corrigiu à mão."""
+def apply_message(conn, mid, text, created, qtag, attachments=None):
+    """Aplica o parser a uma mensagem: cria/atualiza os links/anexos dela. Não mexe no que você corrigiu à mão."""
     new, keys = 0, []
-    for rel in extract_releases(text, qtag):
-        key = link_key(rel["url"])
+    for rel in extract_releases(text, qtag, attachments):
+        key = rel["key"]
         keys.append(key)
         row = conn.execute("SELECT id, edited FROM links WHERE ukey = ?", (key,)).fetchone()
         if row:
@@ -423,14 +452,14 @@ def apply_message(conn, mid, text, created, qtag):
                 conn.execute("UPDATE links SET message_id = ? WHERE id = ?", (mid, row[0]))
             else:
                 conn.execute(
-                    "UPDATE links SET title = ?, url = ?, extra = ?, status = ?, reason = ?, message_id = ? WHERE id = ?",
-                    (rel["title"], rel["url"], rel["extra"], rel["status"], rel["reason"], mid, row[0]),
+                    "UPDATE links SET title = ?, url = ?, extra = ?, status = ?, reason = ?, kind = ?, message_id = ? WHERE id = ?",
+                    (rel["title"], rel["url"], rel["extra"], rel["status"], rel["reason"], rel["kind"], mid, row[0]),
                 )
             continue
         conn.execute(
-            "INSERT INTO links (title, url, extra, status, reason, message_id, ukey, edited, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)",
-            (rel["title"], rel["url"], rel["extra"], rel["status"], rel["reason"], mid, key, created),
+            "INSERT INTO links (title, url, extra, status, reason, kind, message_id, ukey, edited, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)",
+            (rel["title"], rel["url"], rel["extra"], rel["status"], rel["reason"], rel["kind"], mid, key, created),
         )
         new += 1
         if rel["status"] == "ok":
@@ -446,36 +475,47 @@ def apply_message(conn, mid, text, created, qtag):
     return new
 
 
-def process_message(mid, text, created):
-    """Guarda o texto original da mensagem e (re)indexa os links dela."""
+def process_message(mid, text, created, attachments=None):
+    """Guarda o texto e os anexos originais da mensagem e (re)indexa os links/arquivos dela."""
+    attachments = attachments or []
     qtag = load_config().get("quality_tag", "")
     with db() as conn:
         known = conn.execute("SELECT 1 FROM messages WHERE message_id = ?", (mid,)).fetchone()
-        if not known and not (URL_RE.search(text or "") or MD_LINK_RE.search(text or "")):
+        if not known and not attachments and not (URL_RE.search(text or "") or MD_LINK_RE.search(text or "")):
             return 0
         conn.execute(
-            "INSERT OR REPLACE INTO messages (message_id, text, created_at, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
-            (mid, text, created),
+            "INSERT OR REPLACE INTO messages (message_id, text, created_at, updated_at, attachments) "
+            "VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?)",
+            (mid, text, created, json.dumps(attachments)),
         )
-        return apply_message(conn, mid, text, created, qtag)
+        return apply_message(conn, mid, text, created, qtag, attachments)
 
 
 def reprocess_all():
     """Reaplica o parser a todos os textos guardados (depois de melhorar o parser ou trocar a etiqueta)."""
     qtag = load_config().get("quality_tag", "")
     with db() as conn:
-        rows = conn.execute("SELECT message_id, text, created_at FROM messages").fetchall()
-        for mid, text, created in rows:
-            apply_message(conn, mid, text, created, qtag)
+        rows = conn.execute("SELECT message_id, text, created_at, attachments FROM messages").fetchall()
+        for mid, text, created, attachments in rows:
+            try:
+                atts = json.loads(attachments or "[]")
+            except json.JSONDecodeError:
+                atts = []
+            apply_message(conn, mid, text, created, qtag, atts)
     return len(rows)
 
 
 def index_message(message, self_id):
-    """Indexa os links de uma mensagem do Discord; ignora o próprio bot."""
+    """Indexa os links e arquivos anexados de uma mensagem do Discord; ignora o próprio bot."""
     if message.author.id == self_id:
         return 0
     created = message.created_at.strftime("%Y-%m-%d %H:%M:%S")
-    return process_message(str(message.id), message_text(message), created)
+    atts = [
+        [str(a.id), a.filename, a.url]
+        for a in message.attachments
+        if os.path.splitext(a.filename or "")[1].lower() in VIDEO_EXTS
+    ]
+    return process_message(str(message.id), message_text(message), created, atts)
 
 
 # ---------------------------------------------------------------- config
@@ -693,8 +733,8 @@ def torrent_info(title, url):
     return {"length": FAKE_SIZE, "name": safe_name(title), "piece length": PIECE_LEN, "pieces": pieces}
 
 
-def make_torrent(title, url):
-    return bencode({"comment": url, "created by": "Francorr", "info": torrent_info(title, url)})
+def make_torrent(title, url, kind="drive"):
+    return bencode({"comment": url, "kind": kind, "created by": "Francorr", "info": torrent_info(title, url)})
 
 
 def info_hash(title, url):
@@ -739,19 +779,20 @@ def set_job(job_id, status, error=None):
 
 
 def read_torrent(path):
-    """Devolve (url, nome) de um .torrent do Francorr; tolera arquivos fora do padrão."""
+    """Devolve (url, nome, kind) de um .torrent do Francorr; tolera arquivos fora do padrão."""
     with open(path, "rb") as f:
         data = f.read()
     try:
         top, _ = bdecode(data)
-        return top[b"comment"].decode(), top[b"info"][b"name"].decode()
+        kind = top[b"kind"].decode() if b"kind" in top else "drive"
+        return top[b"comment"].decode(), top[b"info"][b"name"].decode(), kind
     except Exception:  # noqa: BLE001
         pass
     # plano B: procura o link do Drive no texto bruto e usa o nome do arquivo como título
     m = re.search(rb"https?://[A-Za-z0-9\-._~:/?#@!$&'()*+,;=%]+", data)
     if m:
         url = re.sub(r"\d{1,3}:[a-z].*$", "", m.group(0).decode(errors="ignore"))
-        return url, os.path.splitext(os.path.basename(path))[0]
+        return url, os.path.splitext(os.path.basename(path))[0], "drive"
     raise ValueError(f"arquivo inválido ({len(data)} bytes, início: {data[:60]!r})")
 
 
@@ -782,7 +823,7 @@ def scan_torrent_dir():
                     raise ValueError("arquivo vazio")
                 continue
             try:
-                url, name = read_torrent(path)
+                url, name, kind = read_torrent(path)
                 if not url.startswith("http"):
                     raise ValueError("torrent sem link do Francorr")
             except Exception:  # noqa: BLE001
@@ -807,8 +848,8 @@ def scan_torrent_dir():
             skip = last and (last[0] in ("queued", "downloading") or (last[0] == "done" and ready))
             if not skip:
                 conn.execute(
-                    "INSERT INTO jobs (name, url, status, updated_at) VALUES (?, ?, 'queued', CURRENT_TIMESTAMP)",
-                    (name, url),
+                    "INSERT INTO jobs (name, url, kind, status, updated_at) VALUES (?, ?, ?, 'queued', CURRENT_TIMESTAMP)",
+                    (name, url, kind),
                 )
                 print(f"Download na fila: {name}", flush=True)
         try:
@@ -820,7 +861,7 @@ def scan_torrent_dir():
 def next_job():
     with db() as conn:
         row = conn.execute(
-            "SELECT id, name, url FROM jobs WHERE status = 'queued' ORDER BY id LIMIT 1"
+            "SELECT id, name, url, kind FROM jobs WHERE status = 'queued' ORDER BY id LIMIT 1"
         ).fetchone()
         if row:
             conn.execute(
@@ -840,23 +881,62 @@ def call_gdown(fn, **kwargs):
     return fn(**kwargs)
 
 
+def refresh_attachment_urls(urls):
+    """Pede ao Discord links novos para anexos cuja assinatura expirou (a parte fixa do link não muda)."""
+    token = load_config().get("token", "").strip()
+    if not token:
+        raise RuntimeError("token do bot não configurado, não dá para renovar o link do anexo")
+    body = json.dumps({"attachment_urls": list(urls)}).encode()
+    req = urllib.request.Request(
+        "https://discord.com/api/v10/attachments/refresh-urls",
+        data=body,
+        headers={"Authorization": f"Bot {token}", "Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        data = json.loads(resp.read())
+    return {item["original"]: item["refreshed"] for item in data.get("refreshed_urls", [])}
+
+
+def _http_download(url, dest_path):
+    req = urllib.request.Request(url, headers={"User-Agent": "Francorr"})
+    with urllib.request.urlopen(req, timeout=60) as resp, open(dest_path, "wb") as f:
+        shutil.copyfileobj(resp, f)
+
+
+def download_discord_attachment(url, dest_path):
+    """Baixa um arquivo anexado ao Discord; se o link expirou, pede um novo e tenta de novo."""
+    try:
+        _http_download(url, dest_path)
+    except urllib.error.HTTPError as e:
+        if e.code not in (401, 403, 404):
+            raise
+        fresh = refresh_attachment_urls([url]).get(url)
+        if not fresh:
+            raise RuntimeError(f"link do anexo expirou e não consegui renovar ({e})") from e
+        _http_download(fresh, dest_path)
+
+
 def run_job(job):
-    job_id, name, url = job
+    job_id, name, url, kind = job
     safe = safe_name(name)
     work = os.path.join(TMP_DIR, str(job_id))
     dl = os.path.join(work, "dl")
     try:
         shutil.rmtree(work, ignore_errors=True)
         os.makedirs(dl)
-        import gdown
-
         print(f"Baixando: {name}", flush=True)
-        if "/folders/" in url:
-            call_gdown(gdown.download_folder, url=url, output=dl, quiet=True, remaining_ok=True)
+        if kind == "discord_attachment":
+            fname = os.path.basename(urlparse(url).path) or (safe + ".mkv")
+            download_discord_attachment(url, os.path.join(dl, fname))
         else:
-            fid = drive_file_id(url)
-            dl_url = f"https://drive.google.com/uc?id={fid}" if fid else url
-            call_gdown(gdown.download, url=dl_url, output=dl + os.sep, quiet=True, fuzzy=True)
+            import gdown
+
+            if "/folders/" in url:
+                call_gdown(gdown.download_folder, url=url, output=dl, quiet=True, remaining_ok=True)
+            else:
+                fid = drive_file_id(url)
+                dl_url = f"https://drive.google.com/uc?id={fid}" if fid else url
+                call_gdown(gdown.download, url=dl_url, output=dl + os.sep, quiet=True, fuzzy=True)
         files = [os.path.join(r, f) for r, _, fs in os.walk(dl) for f in fs]
         if not files:
             raise RuntimeError("nada foi baixado (link privado ou cota do Drive excedida?)")
@@ -1387,15 +1467,17 @@ def torznab_api(t: str = Query(None), q: str = Query(None), limit: int = Query(5
 @APP.get("/download")
 def download(id: int, redirect: int = 0):
     with db() as conn:
-        row = conn.execute("SELECT title, url FROM links WHERE id = ? AND status = 'ok'", (id,)).fetchone()
+        row = conn.execute(
+            "SELECT title, url, kind FROM links WHERE id = ? AND status = 'ok'", (id,)
+        ).fetchone()
     if not row:
         return JSONResponse(status_code=404, content={"error": "Link não encontrado"})
-    title, url = row
-    if redirect:  # ?redirect=1 abre o link original do Drive (uso manual)
+    title, url, kind = row
+    if redirect:  # ?redirect=1 abre o link original (uso manual)
         return Response(status_code=302, headers={"Location": url})
-    # Para o Sonarr: um .torrent válido que carrega o link do Drive no campo "comment"
+    # Para o Sonarr: um .torrent válido que carrega o link (Drive ou anexo do Discord) no campo "comment"
     return Response(
-        content=make_torrent(title, url),
+        content=make_torrent(title, url, kind or "drive"),
         media_type="application/x-bittorrent",
         headers={"Content-Disposition": "attachment; filename*=UTF-8''" + quote(safe_name(title) + ".torrent")},
     )

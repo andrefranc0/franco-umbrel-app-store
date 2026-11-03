@@ -1,4 +1,4 @@
-# Francorr v1.0.12 - se este código estiver no seu repositório, o arquivo tem "def download_discord_attachment"
+# Francorr v1.0.13 - se este código estiver no seu repositório, o arquivo tem "def set_progress"
 import asyncio
 import hashlib
 import hmac
@@ -9,6 +9,7 @@ import re
 import secrets
 import shutil
 import sqlite3
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -26,7 +27,7 @@ DATA_DIR = os.getenv("DATA_DIR", "/app/data")
 DB_PATH = os.path.join(DATA_DIR, "database.db")
 CONFIG_PATH = os.path.join(DATA_DIR, "config.json")
 SELF_URL = os.getenv("SELF_URL", "http://franco-francorr_web_1:8090")
-BUILD = "1.0.12"  # mesma versão do umbrel-app.yml; aparece no log e na página para conferir o que está rodando
+BUILD = "1.0.13"  # mesma versão do umbrel-app.yml; aparece no log e na página para conferir o que está rodando
 
 # Pastas de download (a pasta /downloads do Umbrel é a mesma que o Sonarr enxerga)
 DOWNLOAD_ROOT = os.getenv("DOWNLOAD_DIR", "/downloads")
@@ -127,8 +128,14 @@ def init_db():
             """
         )
         jcols = {r[1] for r in conn.execute("PRAGMA table_info(jobs)")}
-        if "kind" not in jcols:
-            conn.execute("ALTER TABLE jobs ADD COLUMN kind TEXT DEFAULT 'drive'")
+        for jname, jddl in (
+            ("kind", "TEXT DEFAULT 'drive'"),
+            ("bytes_done", "INTEGER DEFAULT 0"),
+            ("bytes_total", "INTEGER"),  # NULL = tamanho ainda desconhecido
+            ("started_at", "TIMESTAMP"),  # quando saiu de 'queued' para 'downloading'
+        ):
+            if jname not in jcols:
+                conn.execute(f"ALTER TABLE jobs ADD COLUMN {jname} {jddl}")
 
 
 init_db()
@@ -778,6 +785,23 @@ def set_job(job_id, status, error=None):
         )
 
 
+def set_progress(job_id, bytes_done=None, bytes_total=None):
+    """Atualiza o progresso de um download; chamado várias vezes durante o download (por isso é leve)."""
+    sets, vals = [], []
+    if bytes_done is not None:
+        sets.append("bytes_done = ?")
+        vals.append(bytes_done)
+    if bytes_total is not None:
+        sets.append("bytes_total = ?")
+        vals.append(bytes_total)
+    if not sets:
+        return
+    sets.append("updated_at = CURRENT_TIMESTAMP")
+    vals.append(job_id)
+    with db() as conn:
+        conn.execute(f"UPDATE jobs SET {', '.join(sets)} WHERE id = ?", vals)
+
+
 def read_torrent(path):
     """Devolve (url, nome, kind) de um .torrent do Francorr; tolera arquivos fora do padrão."""
     with open(path, "rb") as f:
@@ -865,7 +889,8 @@ def next_job():
         ).fetchone()
         if row:
             conn.execute(
-                "UPDATE jobs SET status = 'downloading', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                "UPDATE jobs SET status = 'downloading', started_at = CURRENT_TIMESTAMP, "
+                "bytes_done = 0, bytes_total = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                 (row[0],),
             )
     return row
@@ -897,23 +922,52 @@ def refresh_attachment_urls(urls):
     return {item["original"]: item["refreshed"] for item in data.get("refreshed_urls", [])}
 
 
-def _http_download(url, dest_path):
+def _http_download(url, dest_path, job_id=None, chunk_size=1 << 16):
+    """Baixa em pedaços, atualizando bytes_done/bytes_total do job no máximo a cada ~0.7s."""
     req = urllib.request.Request(url, headers={"User-Agent": "Francorr"})
-    with urllib.request.urlopen(req, timeout=60) as resp, open(dest_path, "wb") as f:
-        shutil.copyfileobj(resp, f)
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        length = resp.headers.get("Content-Length")
+        total = int(length) if length and length.isdigit() else None
+        if job_id is not None:
+            set_progress(job_id, bytes_done=0, bytes_total=total)
+        done, last_update = 0, 0.0
+        with open(dest_path, "wb") as f:
+            while True:
+                buf = resp.read(chunk_size)
+                if not buf:
+                    break
+                f.write(buf)
+                done += len(buf)
+                now = time.time()
+                if job_id is not None and now - last_update >= 0.7:
+                    set_progress(job_id, bytes_done=done)
+                    last_update = now
+        if job_id is not None:
+            set_progress(job_id, bytes_done=done, bytes_total=total or done)
 
 
-def download_discord_attachment(url, dest_path):
+def download_discord_attachment(url, dest_path, job_id=None):
     """Baixa um arquivo anexado ao Discord; se o link expirou, pede um novo e tenta de novo."""
     try:
-        _http_download(url, dest_path)
+        _http_download(url, dest_path, job_id)
     except urllib.error.HTTPError as e:
         if e.code not in (401, 403, 404):
             raise
         fresh = refresh_attachment_urls([url]).get(url)
         if not fresh:
             raise RuntimeError(f"link do anexo expirou e não consegui renovar ({e})") from e
-        _http_download(fresh, dest_path)
+        _http_download(fresh, dest_path, job_id)
+
+
+def _watch_folder_size(job_id, folder, stop_event):
+    """Enquanto o gdown baixa (sem nos dar um retorno de progresso), acompanha o tamanho que já caiu no disco."""
+    while not stop_event.is_set():
+        try:
+            size = sum(os.path.getsize(os.path.join(r, f)) for r, _d, fs in os.walk(folder) for f in fs)
+            set_progress(job_id, bytes_done=size)
+        except OSError:
+            pass
+        stop_event.wait(1)
 
 
 def run_job(job):
@@ -927,19 +981,29 @@ def run_job(job):
         print(f"Baixando: {name}", flush=True)
         if kind == "discord_attachment":
             fname = os.path.basename(urlparse(url).path) or (safe + ".mkv")
-            download_discord_attachment(url, os.path.join(dl, fname))
+            download_discord_attachment(url, os.path.join(dl, fname), job_id)
         else:
             import gdown
 
-            if "/folders/" in url:
-                call_gdown(gdown.download_folder, url=url, output=dl, quiet=True, remaining_ok=True)
-            else:
-                fid = drive_file_id(url)
-                dl_url = f"https://drive.google.com/uc?id={fid}" if fid else url
-                call_gdown(gdown.download, url=dl_url, output=dl + os.sep, quiet=True, fuzzy=True)
+            # o gdown não dá um retorno de progresso: um monitor acompanha o tamanho da pasta em paralelo
+            stop_event = threading.Event()
+            watcher = threading.Thread(target=_watch_folder_size, args=(job_id, dl, stop_event), daemon=True)
+            watcher.start()
+            try:
+                if "/folders/" in url:
+                    call_gdown(gdown.download_folder, url=url, output=dl, quiet=True, remaining_ok=True)
+                else:
+                    fid = drive_file_id(url)
+                    dl_url = f"https://drive.google.com/uc?id={fid}" if fid else url
+                    call_gdown(gdown.download, url=dl_url, output=dl + os.sep, quiet=True, fuzzy=True)
+            finally:
+                stop_event.set()
+                watcher.join(timeout=2)
         files = [os.path.join(r, f) for r, _, fs in os.walk(dl) for f in fs]
         if not files:
             raise RuntimeError("nada foi baixado (link privado ou cota do Drive excedida?)")
+        total_size = sum(os.path.getsize(f) for f in files)
+        set_progress(job_id, bytes_done=total_size, bytes_total=total_size)
 
         stage = os.path.join(work, safe)
         os.rename(dl, stage)
@@ -1091,6 +1155,19 @@ PAGE = """<!doctype html>
  .item{border-top:1px solid #333;padding:8px 0}.item:first-child{border-top:0}
  .item input{margin:4px 0}.item button{width:auto;padding:6px 12px;margin:2px 4px 2px 0}
  .why{color:#e6b95b;font-size:12px}.src{color:#777;font-size:11px;word-break:break-all}
+ .job{border-top:1px solid #333;padding:10px 0}.job:first-child{border-top:0}
+ .job-top{display:flex;justify-content:space-between;gap:8px;align-items:baseline}
+ .job-name{font-weight:600;word-break:break-word}
+ .job-badge{font-size:11px;padding:2px 8px;border-radius:999px;white-space:nowrap;flex:none}
+ .badge-queued{background:#333;color:#aaa}.badge-downloading{background:#2d4a7a;color:#9ec1ff}
+ .badge-done{background:#1f4a2e;color:#8ce0a4}.badge-failed{background:#4a1f1f;color:#ff9a9a}
+ .bar-outer{background:#2a2a2a;border-radius:6px;height:8px;overflow:hidden;margin:6px 0}
+ .bar-inner{height:100%;background:#5b8be6;transition:width .4s linear}
+ .bar-inner.bar-done{background:#4caf6e}.bar-inner.bar-fail{background:#c0514f;width:100%!important}
+ .bar-inner.bar-indeterminate{background-image:repeating-linear-gradient(45deg,#5b8be6,#5b8be6 10px,#3f6bbf 10px,#3f6bbf 20px);background-size:28px 28px;animation:barstripe 1s linear infinite}
+ @keyframes barstripe{from{background-position:0 0}to{background-position:28px 0}}
+ .job-meta{color:#999;font-size:12px}
+ .job-err{color:#e88;font-size:12px;margin-top:4px;word-break:break-word}
  code{background:#222;padding:2px 6px;border-radius:4px}
  .box{background:#1c1c1c;border-radius:10px;padding:14px;margin-bottom:18px}
 </style></head><body>
@@ -1137,7 +1214,7 @@ Watch Folder: <code>/downloads/francorr/complete</code></div>
 <span id="umsg"></span></div>
 
 <h3>Downloads</h3>
-<div class="box">__JOBS__</div>
+<div class="box" id="jobsBox">Carregando...</div>
 <p style="color:#777;font-size:12px">Código v__BUILD__</p>
 
 <script>
@@ -1180,6 +1257,66 @@ async function review(id, action){
   await post('review/'+id,{action:action,title:t?t.value:''});
   location.reload();
 }
+function esc(s){ const d=document.createElement('div'); d.textContent=s||''; return d.innerHTML; }
+function fmtBytes(n){
+  if(n==null) return '?';
+  const u=['B','KB','MB','GB','TB']; let i=0;
+  while(n>=1024 && i<u.length-1){ n/=1024; i++; }
+  return (i>0 && n<10 ? n.toFixed(1) : Math.round(n)) + ' ' + u[i];
+}
+function fmtTime(s){
+  if(s==null || !isFinite(s) || s<0) return '--';
+  s = Math.round(s);
+  const h=Math.floor(s/3600), m=Math.floor((s%3600)/60), sec=s%60;
+  return (h?h+'h ':'') + (h||m ? String(m).padStart(h?2:1,'0')+'m ' : '') + sec+'s';
+}
+const KIND_LABEL = {drive:'Google Drive', discord_attachment:'Anexo do Discord'};
+const STATUS_LABEL = {queued:'Na fila', downloading:'Baixando', done:'Concluído', failed:'Falhou'};
+let jobSamples = {};  // id -> {bytes, t} da última amostra, para calcular velocidade
+async function refreshJobs(){
+  let jobs;
+  try {
+    const r = await fetch('jobs');
+    if(r.status===401){ location.reload(); return; }
+    jobs = await r.json();
+  } catch(e){ return; }
+  const box = document.getElementById('jobsBox');
+  if(!jobs.length){ box.textContent = 'Nenhum download ainda.'; jobSamples = {}; return; }
+  const now = Date.now()/1000;
+  let out = '';
+  for(const j of jobs){
+    const pct = j.bytes_total ? Math.min(100, 100*j.bytes_done/j.bytes_total) : null;
+    let speed = 0;
+    const prev = jobSamples[j.id];
+    if(j.status==='downloading' && prev && j.updated_at > prev.t){
+      speed = Math.max(0, (j.bytes_done - prev.bytes) / (j.updated_at - prev.t));
+    }
+    if(j.status==='downloading') jobSamples[j.id] = {bytes: j.bytes_done, t: j.updated_at};
+    else delete jobSamples[j.id];
+    const eta = (speed>0 && j.bytes_total) ? (j.bytes_total - j.bytes_done)/speed : null;
+    const barPct = pct==null ? 100 : pct;
+    const barClass = j.status==='failed' ? 'bar-fail' : j.status==='done' ? 'bar-done'
+                    : (pct==null && j.status==='downloading') ? 'bar-indeterminate' : '';
+    const meta = [];
+    if(j.status!=='queued'){
+      meta.push((pct!=null ? pct.toFixed(1)+'%' : fmtBytes(j.bytes_done)) + (j.bytes_total ? ' de '+fmtBytes(j.bytes_total) : ''));
+    }
+    if(j.status==='downloading' && speed>0) meta.push(fmtBytes(speed)+'/s');
+    if(j.status==='downloading' && eta!=null) meta.push('faltam ' + fmtTime(eta));
+    if(j.started_at) meta.push((j.status==='downloading'?'há ':'levou ') + fmtTime((j.status==='downloading'?now:j.updated_at) - j.started_at));
+    if(KIND_LABEL[j.kind]) meta.push(KIND_LABEL[j.kind]);
+    out += '<div class="job">'
+      + '<div class="job-top"><span class="job-name">' + esc(j.name) + '</span>'
+      + '<span class="job-badge badge-' + j.status + '">' + (STATUS_LABEL[j.status]||j.status) + '</span></div>'
+      + (j.status!=='queued' ? '<div class="bar-outer"><div class="bar-inner ' + barClass + '" style="width:' + barPct + '%"></div></div>' : '')
+      + '<div class="job-meta">' + esc(meta.join(' · ')) + '</div>'
+      + (j.error ? '<div class="job-err">' + esc(j.error) + '</div>' : '')
+      + '</div>';
+  }
+  box.innerHTML = out;
+}
+refreshJobs();
+setInterval(refreshJobs, 2000);
 </script></body></html>"""
 
 
@@ -1206,19 +1343,6 @@ async function go(){
   if(r.ok){location.reload()}else{document.getElementById('err').textContent=j.error||'erro'}
 }
 </script></body></html>"""
-
-
-def jobs_html():
-    with db() as conn:
-        rows = conn.execute("SELECT name, status, error FROM jobs ORDER BY id DESC LIMIT 8").fetchall()
-    if not rows:
-        return "Nenhum download ainda."
-    label = {"queued": "na fila", "downloading": "baixando", "done": "concluído", "failed": "falhou"}
-    out = []
-    for name, status, error in rows:
-        extra = f" - {html.escape(error)}" if error else ""
-        out.append(f"<div>{label.get(status, status)}: {html.escape(name or '')}{extra}</div>")
-    return "".join(out)
 
 
 def review_html():
@@ -1260,7 +1384,6 @@ def home(request: Request):
         "__CHANNEL__": html.escape(str(cfg["channel_id"]), quote=True),
         "__TOKEN_HINT__": "(já salvo - deixe vazio para manter)" if cfg["token"] else "cole o token aqui",
         "__SELF_URL__": html.escape(SELF_URL),
-        "__JOBS__": jobs_html(),
         "__BUILD__": BUILD,
         "__REVIEW__": review_html(),
         "__REVIEW_COUNT__": str(n_review),
@@ -1275,7 +1398,7 @@ def home(request: Request):
         ),
     }
     # substituição em uma passada só, para o conteúdo inserido nunca ser reinterpretado
-    return re.sub(r"__(?:STATUS|COUNT|CHANNEL|TOKEN_HINT|SELF_URL|JOBS|BUILD|REVIEW_COUNT|IGNORED_COUNT|MSG_COUNT|REVIEW|QTAG|AUTH_USER|AUTH_WARN|UPDATE_NOTE)__", lambda m: values[m.group(0)], PAGE)
+    return re.sub(r"__(?:STATUS|COUNT|CHANNEL|TOKEN_HINT|SELF_URL|BUILD|REVIEW_COUNT|IGNORED_COUNT|MSG_COUNT|REVIEW|QTAG|AUTH_USER|AUTH_WARN|UPDATE_NOTE)__", lambda m: values[m.group(0)], PAGE)
 
 
 @APP.post("/config")
@@ -1462,6 +1585,42 @@ def torznab_api(t: str = Query(None), q: str = Query(None), limit: int = Query(5
   </channel>
 </rss>"""
     return Response(content=rss, media_type="application/xml")
+
+
+def epoch_ts(ts):
+    """Converte o timestamp gravado pelo sqlite (UTC, sem fuso) para segundos desde 1970."""
+    if not ts:
+        return None
+    try:
+        return datetime.strptime(ts, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc).timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
+@APP.get("/jobs")
+def jobs_api(request: Request):
+    if (denied := guard(request)):
+        return denied
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT id, name, kind, status, error, bytes_done, bytes_total, started_at, updated_at "
+            "FROM jobs ORDER BY id DESC LIMIT 15"
+        ).fetchall()
+    out = [
+        {
+            "id": jid,
+            "name": name,
+            "kind": kind or "drive",
+            "status": status,
+            "error": error,
+            "bytes_done": bdone or 0,
+            "bytes_total": btotal,
+            "started_at": epoch_ts(started),
+            "updated_at": epoch_ts(updated) or time.time(),
+        }
+        for jid, name, kind, status, error, bdone, btotal, started, updated in rows
+    ]
+    return JSONResponse(content=out)
 
 
 @APP.get("/download")

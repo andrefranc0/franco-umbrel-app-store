@@ -1,4 +1,4 @@
-# Francorr v1.0.13 - se este código estiver no seu repositório, o arquivo tem "def set_progress"
+# Francorr v1.0.14 - se este código estiver no seu repositório, o arquivo tem a classe CSS "dash"
 import asyncio
 import hashlib
 import hmac
@@ -27,7 +27,7 @@ DATA_DIR = os.getenv("DATA_DIR", "/app/data")
 DB_PATH = os.path.join(DATA_DIR, "database.db")
 CONFIG_PATH = os.path.join(DATA_DIR, "config.json")
 SELF_URL = os.getenv("SELF_URL", "http://franco-francorr_web_1:8090")
-BUILD = "1.0.13"  # mesma versão do umbrel-app.yml; aparece no log e na página para conferir o que está rodando
+BUILD = "1.0.14"  # mesma versão do umbrel-app.yml; aparece no log e na página para conferir o que está rodando
 
 # Pastas de download (a pasta /downloads do Umbrel é a mesma que o Sonarr enxerga)
 DOWNLOAD_ROOT = os.getenv("DOWNLOAD_DIR", "/downloads")
@@ -1149,73 +1149,151 @@ PAGE = """<!doctype html>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Francorr</title>
 <style>
- body{font-family:system-ui,sans-serif;background:#111;color:#eee;max-width:560px;margin:40px auto;padding:0 16px}
- input,button{width:100%;padding:10px;margin:6px 0 14px;border-radius:8px;border:1px solid #444;background:#1c1c1c;color:#eee;box-sizing:border-box}
- button{background:#5b8be6;border:0;cursor:pointer;font-weight:600}
- .item{border-top:1px solid #333;padding:8px 0}.item:first-child{border-top:0}
- .item input{margin:4px 0}.item button{width:auto;padding:6px 12px;margin:2px 4px 2px 0}
- .why{color:#e6b95b;font-size:12px}.src{color:#777;font-size:11px;word-break:break-all}
- .job{border-top:1px solid #333;padding:10px 0}.job:first-child{border-top:0}
+ :root{
+   --bg:#0b0e14; --panel:#141a24; --panel-soft:#0f1420; --panel-2:#121722;
+   --border:rgba(255,255,255,.08); --border-2:rgba(255,255,255,.05);
+   --text:#e9edf4; --dim:#8a93a6; --dimmer:#5f6779;
+   --accent:#5b8be6; --accent-dim:#2d4a7a;
+   --good:#4caf6e; --good-dim:#1f4a2e; --good-text:#8ce0a4;
+   --warn:#e6b95b; --warn-dim:#4a3d1f;
+   --bad:#c0514f; --bad-dim:#4a1f1f; --bad-text:#ff9a9a;
+ }
+ *{box-sizing:border-box}
+ body{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;background:var(--bg);color:var(--text);
+   margin:0;padding:28px 28px 60px}
+ a{color:var(--accent)}
+ input,button{width:100%;padding:10px 12px;margin:6px 0 4px;border-radius:8px;border:1px solid var(--border);
+   background:var(--panel-soft);color:var(--text);box-sizing:border-box;font:inherit}
+ label{display:block;font-size:12px;color:var(--dim);margin-top:10px}
+ input:focus-visible,button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+ button{background:var(--accent);border-color:transparent;cursor:pointer;font-weight:600;color:#0b0e14;margin-top:10px}
+ button:hover{filter:brightness(1.08)}
+ button.secondary{background:var(--panel-2);color:var(--text);border-color:var(--border);font-weight:500}
+ code{background:var(--panel-2);border:1px solid var(--border-2);padding:2px 6px;border-radius:5px;font-size:.9em}
+
+ .topbar{display:flex;flex-wrap:wrap;gap:16px;align-items:center;justify-content:space-between;
+   padding-bottom:22px;margin-bottom:22px;border-bottom:1px solid var(--border)}
+ .brand{display:flex;align-items:center;gap:12px}
+ .brand h1{font-size:21px;margin:0;letter-spacing:-.01em}
+ .brand .tagline{margin:2px 0 0;color:var(--dim);font-size:13px}
+ .dot{width:10px;height:10px;border-radius:50%;background:var(--dimmer);flex:none}
+ .dot.ok{background:var(--good)}.dot.warn{background:var(--warn)}.dot.bad{background:var(--bad)}
+ .chips{display:flex;flex-wrap:wrap;gap:8px}
+ .chip{background:var(--panel);border:1px solid var(--border);border-radius:999px;padding:6px 14px;
+   font-size:13px;color:var(--dim);white-space:nowrap}
+ .chip b{color:var(--text)}
+ .chip.warn{border-color:rgba(230,185,91,.35);color:var(--warn)}
+
+ .dash{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(300px,1fr);gap:20px}
+ .col{display:flex;flex-direction:column;gap:20px;min-width:0}
+ .col-primary .panel:last-child{flex:1 1 auto}
+ @media (max-width:880px){.dash{grid-template-columns:1fr}.col-primary .panel:last-child{flex:none}body{padding:18px 16px 48px}}
+
+ .panel{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:18px}
+ .col-secondary .panel{background:var(--panel-2);padding:16px}
+ .panel-title{font-size:14px;font-weight:600;margin:0 0 12px;display:flex;align-items:center;gap:8px}
+ .panel-title::before{content:"";width:3px;height:14px;background:var(--accent);border-radius:2px;flex:none}
+ .panel-empty{color:var(--dim);font-size:13px}
+ .subbox{background:var(--panel-soft);border:1px solid var(--border-2);border-radius:8px;
+   padding:10px 12px;margin-top:10px;font-size:13px;line-height:1.6}
+ .notice{color:var(--warn);background:var(--warn-dim);border-radius:8px;padding:8px 12px;
+   font-size:13px;margin-bottom:10px}
+ .hint{color:var(--dim);font-size:12px;margin-left:4px}
+ .footer{color:var(--dimmer);font-size:12px;margin-top:26px}
+
+ .item{border-top:1px solid var(--border);padding:12px 0}.item:first-child{border-top:0;padding-top:0}
+ .item input{margin:6px 0}.item button{width:auto;padding:6px 12px;margin:4px 8px 0 0}
+ .why{color:var(--warn);font-size:12px}.src{color:var(--dimmer);font-size:11px;word-break:break-all}
+
+ .job{border-top:1px solid var(--border);padding:12px 0}.job:first-child{border-top:0;padding-top:0}
  .job-top{display:flex;justify-content:space-between;gap:8px;align-items:baseline}
  .job-name{font-weight:600;word-break:break-word}
  .job-badge{font-size:11px;padding:2px 8px;border-radius:999px;white-space:nowrap;flex:none}
- .badge-queued{background:#333;color:#aaa}.badge-downloading{background:#2d4a7a;color:#9ec1ff}
- .badge-done{background:#1f4a2e;color:#8ce0a4}.badge-failed{background:#4a1f1f;color:#ff9a9a}
- .bar-outer{background:#2a2a2a;border-radius:6px;height:8px;overflow:hidden;margin:6px 0}
- .bar-inner{height:100%;background:#5b8be6;transition:width .4s linear}
- .bar-inner.bar-done{background:#4caf6e}.bar-inner.bar-fail{background:#c0514f;width:100%!important}
- .bar-inner.bar-indeterminate{background-image:repeating-linear-gradient(45deg,#5b8be6,#5b8be6 10px,#3f6bbf 10px,#3f6bbf 20px);background-size:28px 28px;animation:barstripe 1s linear infinite}
+ .badge-queued{background:#30363f;color:#aab0bd}.badge-downloading{background:var(--accent-dim);color:#9ec1ff}
+ .badge-done{background:var(--good-dim);color:var(--good-text)}.badge-failed{background:var(--bad-dim);color:var(--bad-text)}
+ .bar-outer{background:var(--panel-soft);border-radius:6px;height:8px;overflow:hidden;margin:8px 0 6px}
+ .bar-inner{height:100%;background:var(--accent);transition:width .4s linear}
+ .bar-inner.bar-done{background:var(--good)}.bar-inner.bar-fail{background:var(--bad);width:100%!important}
+ .bar-inner.bar-indeterminate{background-image:repeating-linear-gradient(45deg,var(--accent),var(--accent) 10px,#3f6bbf 10px,#3f6bbf 20px);background-size:28px 28px;animation:barstripe 1s linear infinite}
  @keyframes barstripe{from{background-position:0 0}to{background-position:28px 0}}
- .job-meta{color:#999;font-size:12px}
- .job-err{color:#e88;font-size:12px;margin-top:4px;word-break:break-word}
- code{background:#222;padding:2px 6px;border-radius:4px}
- .box{background:#1c1c1c;border-radius:10px;padding:14px;margin-bottom:18px}
+ @media (prefers-reduced-motion:reduce){.bar-inner{transition:none}.bar-inner.bar-indeterminate{animation:none;background-image:none;background:var(--accent-dim)}}
+ .job-meta{color:var(--dim);font-size:12px}
+ .job-err{color:var(--bad-text);font-size:12px;margin-top:4px;word-break:break-word}
 </style></head><body>
-<h1>Francorr</h1>
-<div class="box"><b>Status do bot:</b> <span id="status">__STATUS__</span><br>
-<b>Links indexados:</b> __COUNT__ (visíveis ao Sonarr) &middot; <b>Para revisar:</b> __REVIEW_COUNT__ &middot; <b>Ignorados:</b> __IGNORED_COUNT__</div>
 
-<h3>Para revisar</h3>
-<div class="box">__REVIEW__</div>
+<div class="topbar">
+  <div class="brand">
+    <span class="dot __STATUS_DOT__" id="statusDot"></span>
+    <div><h1>Francorr</h1><p class="tagline">Indexador de posts do Discord para o Sonarr</p></div>
+  </div>
+  <div class="chips">
+    <span class="chip">Bot: <b id="status">__STATUS__</b></span>
+    <span class="chip"><b>__COUNT__</b> indexados</span>
+    <span class="chip warn"><b>__REVIEW_COUNT__</b> para revisar</span>
+    <span class="chip"><b>__IGNORED_COUNT__</b> ignorados</span>
+  </div>
+</div>
 
-<h3>Qualidade e reprocessamento</h3>
-<div class="box">
-<label>Etiqueta de qualidade padrão (usada só quando o post não diz a resolução/fonte)</label>
-<input id="qtag" value="__QTAG__" placeholder="ex.: 1080p WEB-DL (deixe vazio para não adicionar)">
-<button onclick="saveSettings()">Salvar etiqueta</button>
-<button onclick="reprocess()" style="background:#444">Reprocessar posts guardados (__MSG_COUNT__)</button>
-<span id="msg" style="color:#8c8"></span></div>
+<div class="dash">
+  <div class="col col-primary">
+    <section class="panel">
+      <h2 class="panel-title">Para revisar</h2>
+      __REVIEW__
+    </section>
+    <section class="panel">
+      <h2 class="panel-title">Downloads</h2>
+      <div id="jobsBox" class="panel-empty">Carregando...</div>
+    </section>
+  </div>
 
-<h3>Configuração do Discord</h3>
-<label>Token do bot</label>
-<input id="token" type="password" placeholder="__TOKEN_HINT__">
-<label>ID do canal</label>
-<input id="channel" value="__CHANNEL__" placeholder="123456789012345678">
-<button onclick="save()">Salvar e reiniciar bot</button>
+  <div class="col col-secondary">
+    <section class="panel">
+      <h2 class="panel-title">Qualidade e reprocessamento</h2>
+      <label>Etiqueta de qualidade padrão <span class="hint">(usada só quando o post não diz a resolução/fonte)</span></label>
+      <input id="qtag" value="__QTAG__" placeholder="ex.: 1080p WEB-DL (deixe vazio para não adicionar)">
+      <button onclick="saveSettings()">Salvar etiqueta</button>
+      <button class="secondary" onclick="reprocess()">Reprocessar posts guardados (__MSG_COUNT__)</button>
+      <span id="msg" style="color:var(--good-text);font-size:13px"></span>
+    </section>
 
-<h3>Configurar no Sonarr</h3>
-<div class="box">Indexador (Torznab):<br><code>__SELF_URL__/api</code></div>
-<div class="box">Cliente de download (Torrent Blackhole):<br>
-Torrent Folder: <code>/downloads/francorr/torrents</code><br>
-Watch Folder: <code>/downloads/francorr/complete</code></div>
+    <section class="panel">
+      <h2 class="panel-title">Configuração do Discord</h2>
+      <label>Token do bot</label>
+      <input id="token" type="password" placeholder="__TOKEN_HINT__">
+      <label>ID do canal</label>
+      <input id="channel" value="__CHANNEL__" placeholder="123456789012345678">
+      <button onclick="save()">Salvar e reiniciar bot</button>
+    </section>
 
-<h3>Acesso ao painel</h3>
-<div class="box">__AUTH_WARN__
-<label>Usuário</label><input id="au" value="__AUTH_USER__" autocomplete="username">
-<label>Senha atual</label><input id="ac" type="password" autocomplete="current-password">
-<label>Nova senha (mínimo 6 caracteres)</label><input id="an" type="password" autocomplete="new-password">
-<button onclick="saveAccount()">Salvar usuário e senha</button>
-<button onclick="logout()" style="background:#555">Sair</button>
-<span id="amsg" style="color:#8c8"></span></div>
+    <section class="panel">
+      <h2 class="panel-title">Configurar no Sonarr</h2>
+      <div class="subbox">Indexador (Torznab):<br><code>__SELF_URL__/api</code></div>
+      <div class="subbox">Cliente de download (Torrent Blackhole):<br>
+      Torrent Folder: <code>/downloads/francorr/torrents</code><br>
+      Watch Folder: <code>/downloads/francorr/complete</code></div>
+    </section>
 
-<h3>Atualização do código</h3>
-<div class="box">Versão atual: <b>v__BUILD__</b> __UPDATE_NOTE__<br>
-<button onclick="updateCode()">Buscar atualização no GitHub</button>
-<span id="umsg"></span></div>
+    <section class="panel">
+      <h2 class="panel-title">Acesso ao painel</h2>
+      __AUTH_WARN__
+      <label>Usuário</label><input id="au" value="__AUTH_USER__" autocomplete="username">
+      <label>Senha atual</label><input id="ac" type="password" autocomplete="current-password">
+      <label>Nova senha <span class="hint">(mínimo 6 caracteres)</span></label><input id="an" type="password" autocomplete="new-password">
+      <button onclick="saveAccount()">Salvar usuário e senha</button>
+      <button class="secondary" onclick="logout()">Sair</button>
+      <span id="amsg" style="font-size:13px"></span>
+    </section>
 
-<h3>Downloads</h3>
-<div class="box" id="jobsBox">Carregando...</div>
-<p style="color:#777;font-size:12px">Código v__BUILD__</p>
+    <section class="panel">
+      <h2 class="panel-title">Atualização do código</h2>
+      <p style="margin:0 0 4px;font-size:13px">Versão atual: <b>v__BUILD__</b> __UPDATE_NOTE__</p>
+      <button onclick="updateCode()">Buscar atualização no GitHub</button>
+      <span id="umsg" style="font-size:13px"></span>
+    </section>
+  </div>
+</div>
+
+<p class="footer">Código v__BUILD__</p>
 
 <script>
 async function save(){
@@ -1281,7 +1359,8 @@ async function refreshJobs(){
     jobs = await r.json();
   } catch(e){ return; }
   const box = document.getElementById('jobsBox');
-  if(!jobs.length){ box.textContent = 'Nenhum download ainda.'; jobSamples = {}; return; }
+  if(!jobs.length){ box.className = 'panel-empty'; box.textContent = 'Nenhum download ainda.'; jobSamples = {}; return; }
+  box.className = '';
   const now = Date.now()/1000;
   let out = '';
   for(const j of jobs){
@@ -1345,13 +1424,23 @@ async function go(){
 </script></body></html>"""
 
 
+def status_dot_class(status):
+    if status.startswith("Conectado"):
+        return "ok"
+    if status.startswith("Erro"):
+        return "bad"
+    if "não configurado" in status:
+        return ""
+    return "warn"  # conectando...
+
+
 def review_html():
     with db() as conn:
         rows = conn.execute(
             "SELECT id, title, url, reason FROM links WHERE status = 'review' ORDER BY id DESC LIMIT 50"
         ).fetchall()
     if not rows:
-        return "Nada para revisar."
+        return '<p class="panel-empty">Nada para revisar.</p>' 
     out = []
     for item_id, title, url, reason in rows:
         out.append(
@@ -1380,6 +1469,7 @@ def home(request: Request):
     count, n_review, n_ignored, n_msgs = counts()
     values = {
         "__STATUS__": html.escape(bot_state["status"]),
+        "__STATUS_DOT__": status_dot_class(bot_state["status"]),
         "__COUNT__": str(count),
         "__CHANNEL__": html.escape(str(cfg["channel_id"]), quote=True),
         "__TOKEN_HINT__": "(já salvo - deixe vazio para manter)" if cfg["token"] else "cole o token aqui",
@@ -1398,7 +1488,7 @@ def home(request: Request):
         ),
     }
     # substituição em uma passada só, para o conteúdo inserido nunca ser reinterpretado
-    return re.sub(r"__(?:STATUS|COUNT|CHANNEL|TOKEN_HINT|SELF_URL|BUILD|REVIEW_COUNT|IGNORED_COUNT|MSG_COUNT|REVIEW|QTAG|AUTH_USER|AUTH_WARN|UPDATE_NOTE)__", lambda m: values[m.group(0)], PAGE)
+    return re.sub(r"__(?:STATUS|STATUS_DOT|COUNT|CHANNEL|TOKEN_HINT|SELF_URL|BUILD|REVIEW_COUNT|IGNORED_COUNT|MSG_COUNT|REVIEW|QTAG|AUTH_USER|AUTH_WARN|UPDATE_NOTE)__", lambda m: values[m.group(0)], PAGE)
 
 
 @APP.post("/config")

@@ -1,4 +1,4 @@
-# Francorr v1.0.14 - se este código estiver no seu repositório, o arquivo tem a classe CSS "dash"
+# Francorr v1.0.15 - se este código estiver no seu repositório, o arquivo tem "def import_history"
 import asyncio
 import hashlib
 import hmac
@@ -27,7 +27,7 @@ DATA_DIR = os.getenv("DATA_DIR", "/app/data")
 DB_PATH = os.path.join(DATA_DIR, "database.db")
 CONFIG_PATH = os.path.join(DATA_DIR, "config.json")
 SELF_URL = os.getenv("SELF_URL", "http://franco-francorr_web_1:8090")
-BUILD = "1.0.14"  # mesma versão do umbrel-app.yml; aparece no log e na página para conferir o que está rodando
+BUILD = "1.0.15"  # mesma versão do umbrel-app.yml; aparece no log e na página para conferir o que está rodando
 
 # Pastas de download (a pasta /downloads do Umbrel é a mesma que o Sonarr enxerga)
 DOWNLOAD_ROOT = os.getenv("DOWNLOAD_DIR", "/downloads")
@@ -1056,6 +1056,15 @@ async def downloader_loop():
 bot_state = {"client": None, "task": None, "status": "Bot não configurado"}
 
 
+async def import_history(client, channel_id, limit=200):
+    """Lê os últimos posts do canal e indexa os que faltam; apply_message já ignora o que já existe."""
+    channel = client.get_channel(channel_id) or await client.fetch_channel(channel_id)
+    total = 0
+    async for m in channel.history(limit=limit, oldest_first=True):
+        total += index_message(m, client.user.id)
+    return total
+
+
 async def stop_bot():
     client, task = bot_state["client"], bot_state["task"]
     bot_state["client"] = bot_state["task"] = None
@@ -1091,10 +1100,7 @@ async def start_bot():
         print(bot_state["status"], flush=True)
         # importa os últimos posts do canal (sem duplicar o que já foi indexado)
         try:
-            channel = client.get_channel(channel_id) or await client.fetch_channel(channel_id)
-            total = 0
-            async for m in channel.history(limit=200, oldest_first=True):
-                total += index_message(m, client.user.id)
+            total = await import_history(client, channel_id)
             print(f"Histórico importado: {total} link(s) novo(s)", flush=True)
         except Exception as e:  # noqa: BLE001
             bot_state["status"] = f"Conectado como {client.user} (sem acesso ao histórico: {e})"
@@ -1263,6 +1269,8 @@ PAGE = """<!doctype html>
       <label>ID do canal</label>
       <input id="channel" value="__CHANNEL__" placeholder="123456789012345678">
       <button onclick="save()">Salvar e reiniciar bot</button>
+      <button class="secondary" onclick="rescan()">Procurar posts novos</button>
+      <span id="rmsg" style="font-size:13px"></span>
     </section>
 
     <section class="panel">
@@ -1330,6 +1338,13 @@ async function updateCode(){
   if(j.restarting){ setTimeout(function w(){ fetch('./').then(r=>r.ok?location.reload():setTimeout(w,3000)).catch(()=>setTimeout(w,3000)); }, 15000); }
 }
 async function logout(){ await post('logout'); location.reload(); }
+async function rescan(){
+  const m = document.getElementById('rmsg');
+  m.style.color = 'var(--dim)'; m.textContent = ' procurando...';
+  const j = await post('rescan');
+  if(j.error){ m.style.color = '#e66'; m.textContent = ' ' + j.error; }
+  else { m.style.color = 'var(--good-text)'; m.textContent = ' ' + j.new + ' novo(s) encontrado(s)'; setTimeout(()=>location.reload(), 1200); }
+}
 async function review(id, action){
   const t = document.getElementById('t'+id);
   await post('review/'+id,{action:action,title:t?t.value:''});
@@ -1505,6 +1520,27 @@ async def update_config(request: Request):
     await start_bot()
     await asyncio.sleep(2)  # dá tempo de aparecer erro de login
     return {"status": bot_state["status"]}
+
+
+@APP.post("/rescan")
+async def rescan(request: Request):
+    if (denied := guard(request)):
+        return denied
+    client = bot_state["client"]
+    if not client or not client.is_ready():
+        return JSONResponse(status_code=400, content={"error": "bot não está conectado"})
+    cfg = load_config()
+    try:
+        channel_id = int(str(cfg.get("channel_id", "")).strip() or 0)
+    except ValueError:
+        channel_id = 0
+    if not channel_id:
+        return JSONResponse(status_code=400, content={"error": "canal não configurado"})
+    try:
+        total = await import_history(client, channel_id)
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(status_code=500, content={"error": str(e)})
+    return {"new": total}
 
 
 @APP.post("/login")
